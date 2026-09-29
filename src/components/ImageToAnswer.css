@@ -1,0 +1,242 @@
+.ita-section {
+  padding-top: var(--spacing-24) !important;
+  padding-bottom: var(--spacing-32) !important;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.ita-header {
+  text-align: left;
+  max-width: 800px;
+  width: 100%;
+  margin-bottom: var(--spacing-12);
+}
+
+.text-blue-accent {
+  color: var(--accent-blue);
+  letter-spacing: 0.1em;
+}
+
+.ita-title {
+  font-size: clamp(2.5rem, 5vw, 3.5rem);
+  text-transform: uppercase;
+  margin-bottom: var(--spacing-6);
+}
+
+.ita-subtitle {
+  font-size: 1.125rem;
+  color: var(--text-secondary);
+  max-width: 600px;
+}
+
+.query-container {
+  width: 100%;
+  max-width: 800px;
+  padding: var(--spacing-6);
+  margin-bottom: var(--spacing-16);
+}
+
+.query-input-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-4);
+  padding-bottom: var(--spacing-4);
+  border-bottom: 1px solid var(--glass-border);
+  margin-bottom: var(--spacing-4);
+}
+
+.query-icon {
+  background: rgba(37, 99, 235, 0.1);
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(37, 99, 235, 0.2);
+}
+
+.query-text {
+  flex: 1;
+}
+
+.query-label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-family: monospace;
+  margin-bottom: 4px;
+}
+
+.query-question {
+  font-size: 1.25rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.query-meta {
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.05);
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.query-tags {
+  display: flex;
+  gap: var(--spacing-2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.tag {
+  font-size: 0.75rem;
+  font-family: monospace;
+  padding: 4px 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  color: var(--text-secondary);
+}
+
+.tag.success {
+  color: var(--success-mint);
+  background: rgba(74, 222, 128, 0.1);
+}
+
+.tag.border-only {
+  background: transparent;
+  border: 1px solid var(--glass-border);
+}
+
+.ml-auto {
+  margin-left: auto;
+}
+
+.ita-visual-container {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+
+.ita-map-wrapper {
+  position: relative;
+  width: 100%;
+  max-width: 1200px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--glass-border);
+  aspect-ratio: 16/9;
+}
+
+.ita-map-base {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: brightness(0.7);
+}
+
+.ita-map-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.svg-overlay-container {
+  width: 100%;
+  height: 100%;
+}
+
+.polygon-highlight {
+  fill: rgba(37, 99, 235, 0.1);
+  stroke: var(--accent-blue);
+  stroke-width: 2;
+  stroke-dasharray: 8 4;
+  animation: dashMove 20s linear infinite;
+}
+
+.pulse-point {
+  fill: var(--accent-blue);
+  box-shadow: 0 0 20px var(--accent-blue);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.ita-result-panel {
+  position: absolute;
+  bottom: var(--spacing-8);
+  left: var(--spacing-8);
+  width: 380px;
+  padding: var(--spacing-6);
+  background: rgba(10, 12, 16, 0.85);
+}
+
+.text-warning {
+  color: var(--warning-amber);
+}
+
+.result-title {
+  font-size: 1.5rem;
+  margin-bottom: var(--spacing-2);
+}
+
+.result-desc {
+  margin-bottom: var(--spacing-6);
+  line-height: 1.6;
+}
+
+.result-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-4);
+  border-top: 1px solid var(--glass-border);
+  padding-top: var(--spacing-4);
+}
+
+.metric-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.text-success {
+  color: var(--success-mint);
+}
+
+.text-lg {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.w-full {
+  width: 100%;
+}
+
+@keyframes dashMove {
+  to {
+    stroke-dashoffset: -200;
+  }
+}
+
+@keyframes pulse {
+  0% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.5); opacity: 0.5; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@media (max-width: 768px) {
+  .ita-result-panel {
+    position: relative;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    border-radius: 0;
+    border-top: 1px solid var(--glass-border);
+  }
+  .ita-map-wrapper {
+    aspect-ratio: auto;
+    height: 600px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+  }
+}

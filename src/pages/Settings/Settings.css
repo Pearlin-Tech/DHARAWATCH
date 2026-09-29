@@ -1,0 +1,244 @@
+.settings-container {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background-color: var(--bg-color);
+  color: var(--text-primary);
+  display: flex;
+}
+
+.settings-main-content {
+  flex: 1;
+  margin-left: 100px;
+  padding: 48px;
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  justify-content: center;
+}
+
+.settings-inner {
+  width: 100%;
+  max-width: 800px;
+}
+
+.settings-header {
+  margin-bottom: 32px;
+}
+
+.settings-title {
+  font-size: 2rem;
+  font-weight: 600;
+  color: white;
+  margin-bottom: 8px;
+}
+
+.settings-sub {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.settings-tabs {
+  display: flex;
+  gap: 24px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  margin-bottom: 40px;
+}
+
+.settings-tab {
+  padding: 12px 0;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.settings-tab:hover {
+  color: white;
+}
+
+.settings-tab.active {
+  color: white;
+  border-bottom-color: var(--accent-blue);
+}
+
+.settings-section {
+  margin-bottom: 48px;
+}
+
+.settings-section-title {
+  font-size: 1.1rem;
+  font-weight: 500;
+  color: white;
+  margin-bottom: 6px;
+}
+
+.settings-section-desc {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin-bottom: 24px;
+}
+
+.settings-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.settings-row:last-child {
+  border-bottom: none;
+}
+
+.settings-row-content h4 {
+  font-size: 0.95rem;
+  color: white;
+  margin-bottom: 4px;
+}
+
+.settings-row-content p {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.settings-control {
+  min-width: 200px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.settings-input {
+  width: 100%;
+  max-width: 300px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 10px 16px;
+  border-radius: 8px;
+  color: white;
+  font-size: 0.9rem;
+  font-family: monospace;
+}
+
+.settings-input:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+}
+
+.settings-select {
+  width: 100%;
+  max-width: 300px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 10px 16px;
+  border-radius: 8px;
+  color: white;
+  font-size: 0.9rem;
+  appearance: none;
+  cursor: pointer;
+}
+
+.settings-toggle {
+  width: 44px;
+  height: 24px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  position: relative;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.settings-toggle.active {
+  background: var(--accent-blue);
+}
+
+.settings-toggle-thumb {
+  width: 20px;
+  height: 20px;
+  background: white;
+  border-radius: 50%;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  transition: all 0.2s;
+}
+
+.settings-toggle.active .settings-toggle-thumb {
+  left: 22px;
+}
+
+.settings-button {
+  padding: 8px 16px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: white;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.settings-button:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.settings-theme-selector {
+  display: flex;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.settings-theme-selector button {
+  padding: 8px 16px;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  border-right: 1px solid rgba(255, 255, 255, 0.05);
+  transition: all 0.2s;
+}
+
+.settings-theme-selector button:last-child {
+  border-right: none;
+}
+
+.settings-theme-selector button.active {
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
+}
+
+.settings-color-selector {
+  display: flex;
+  gap: 12px;
+}
+
+.color-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.color-circle {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+}
+
+.color-option.active .color-circle {
+  border-color: white;
+}
+
+.settings-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 24px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  margin-top: 40px;
+}

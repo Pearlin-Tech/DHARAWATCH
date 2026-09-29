@@ -1,0 +1,128 @@
+.navbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  transition: all 0.3s ease;
+  padding: var(--spacing-4) 0;
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.navbar.scrolled {
+  padding: var(--spacing-2) 0;
+  margin: var(--spacing-4) var(--spacing-8);
+  border-radius: 12px;
+}
+
+.navbar-container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 0 var(--spacing-8);
+}
+
+.navbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 700;
+  font-size: 1.25rem;
+  letter-spacing: 0.05em;
+}
+
+.brand-sat {
+  color: var(--text-primary);
+}
+
+.brand-ai {
+  color: var(--accent-blue);
+  font-size: 0.8em;
+  background: rgba(37, 99, 235, 0.1);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(37, 99, 235, 0.2);
+}
+
+.navbar-center {
+  display: flex;
+  gap: var(--spacing-8);
+}
+
+.nav-link {
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: color 0.2s ease;
+}
+
+.nav-link:hover {
+  color: var(--text-primary);
+}
+
+.navbar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-4);
+}
+
+.profile-btn {
+  color: var(--text-secondary);
+  padding: 8px;
+  border-radius: 50%;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.profile-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.mobile-menu-btn {
+  color: var(--text-primary);
+}
+
+.mobile-menu {
+  position: absolute;
+  top: 100%;
+  left: var(--spacing-8);
+  right: var(--spacing-8);
+  margin-top: var(--spacing-2);
+  padding: var(--spacing-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-4);
+}
+
+.mt-4 {
+  margin-top: var(--spacing-4);
+}
+
+.hide-mobile {
+  display: flex;
+}
+
+.hide-desktop {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .hide-mobile {
+    display: none;
+  }
+  .hide-desktop {
+    display: block;
+  }
+  .navbar-container {
+    padding: 0 var(--spacing-4);
+  }
+  .navbar.scrolled {
+    margin: var(--spacing-2) var(--spacing-4);
+  }
+}

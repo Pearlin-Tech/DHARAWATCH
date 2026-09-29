@@ -1,0 +1,121 @@
+.accuracy-section {
+  padding-top: var(--spacing-32) !important;
+  padding-bottom: var(--spacing-32) !important;
+}
+
+.accuracy-title {
+  font-size: clamp(2rem, 4vw, 3rem);
+  text-transform: uppercase;
+}
+
+.mb-16 {
+  margin-bottom: var(--spacing-16);
+}
+
+.text-center {
+  text-align: center;
+}
+
+.pipeline-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  position: relative;
+  padding-top: var(--spacing-8);
+}
+
+.pipeline-line-bg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 1px;
+  background: var(--glass-border);
+}
+
+.pipeline-line-active {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 1px;
+  background: var(--accent-blue);
+  box-shadow: 0 0 10px var(--accent-blue-glow);
+}
+
+.pipeline-steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--spacing-8);
+  padding-top: var(--spacing-8);
+}
+
+.pipeline-step {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  padding: var(--spacing-8);
+  border-radius: 8px;
+  position: relative;
+  transition: transform 0.3s ease;
+}
+
+.pipeline-step::before {
+  content: '';
+  position: absolute;
+  top: -25px; /* align with the line */
+  left: var(--spacing-8);
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--bg-color);
+  border: 2px solid var(--accent-blue);
+  z-index: 2;
+}
+
+.step-number {
+  font-family: monospace;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  margin-bottom: var(--spacing-4);
+}
+
+.step-title {
+  font-size: 1.5rem;
+  margin-bottom: var(--spacing-4);
+}
+
+.step-desc {
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin-bottom: var(--spacing-8);
+}
+
+.step-meta {
+  color: var(--text-secondary);
+  padding-top: var(--spacing-4);
+  border-top: 1px solid var(--glass-border);
+}
+
+@media (max-width: 1024px) {
+  .pipeline-steps {
+    grid-template-columns: 1fr;
+    gap: var(--spacing-12);
+  }
+
+  .pipeline-line-bg {
+    top: 0;
+    left: 20px;
+    width: 1px;
+    height: 100%;
+  }
+
+  .pipeline-line-active {
+    top: 0;
+    left: 0;
+    width: 1px !important; /* Override inline width */
+    height: var(--scroll-height, 100%); /* Need JS to set height instead, but we can just skip the vertical line animation for simplicity or use CSS */
+  }
+
+  .pipeline-step::before {
+    top: 30px;
+    left: -25px;
+  }
+}

@@ -1,0 +1,56 @@
+.area-container {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background-color: var(--bg-color);
+  color: var(--text-primary);
+}
+
+.area-top-panel {
+  position: absolute;
+  top: var(--spacing-6);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 100%;
+  max-width: 800px;
+  z-index: 20;
+}
+
+.area-query-bar {
+  display: flex;
+  align-items: center;
+  padding: 8px 8px 8px 16px;
+  border-radius: 12px;
+}
+
+.area-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: white;
+  font-size: 1.1rem;
+  font-weight: 500;
+  outline: none;
+}
+
+.area-input::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.area-submit-btn {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+}
+
+.area-result-panel {
+  position: absolute;
+  bottom: var(--spacing-6);
+  right: var(--spacing-6);
+  width: 360px;
+  z-index: 20;
+  padding: 24px;
+  border-radius: 16px;
+}
