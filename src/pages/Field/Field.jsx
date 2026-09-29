@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import maplibregl from '../../lib/maplibre';
+import { useGoogleMaps } from '../../hooks/useGoogleMaps';
 import {
   Camera, Navigation, Satellite, Layout, CheckCircle,
   CheckCircle2, RefreshCcw, FileText, Maximize2, Crosshair,
@@ -82,6 +82,8 @@ export default function Field() {
   const showPinToolRef = useRef(false);
 
   const navCtx = location.state || {};
+  const googleMapsApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+  const { loaded: mapsLoaded, error: mapsError } = useGoogleMaps(googleMapsApiKey);
 
   // ─ Core state ─
   const [obs, setObs] = useState(null);
@@ -117,50 +119,61 @@ export default function Field() {
 
   // ─ Map init ──────────────────────────────────────────────────
   useEffect(() => {
-    if (!mapContainer.current || map.current) return;
+    if (!mapsLoaded || !mapContainer.current || map.current) return;
 
     const center = navCtx.coordinates
-      ? [navCtx.coordinates.lon ?? navCtx.coordinates.longitude ?? 78.96,
-         navCtx.coordinates.lat ?? navCtx.coordinates.latitude ?? 20.59]
-      : [78.96, 20.59];
+      ? { lat: navCtx.coordinates.lat ?? navCtx.coordinates.latitude ?? 20.59,
+          lng: navCtx.coordinates.lon ?? navCtx.coordinates.longitude ?? 78.96 }
+      : { lat: 20.59, lng: 78.96 };
 
-    map.current = new maplibregl.Map({
-      container: mapContainer.current,
-      style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
+    map.current = new window.google.maps.Map(mapContainer.current, {
       center,
-      zoom: 10,
-      attributionControl: false
+      zoom: 5,
+      mapTypeId: 'satellite',
+      disableDefaultUI: true,
+      zoomControl: true,
     });
 
-    map.current.on('click', (e) => {
+    map.current.addListener('click', (e) => {
       if (!showPinToolRef.current) return;
-      const { lng, lat } = e.lngLat;
+      const lat = e.latLng.lat();
+      const lng = e.latLng.lng();
       handleSetLocation(lat, lng, 'USER_PINNED');
       setShowPinTool(false);
     });
-  }, []);
+  }, [mapsLoaded]);
 
   // ─ Map: update pin when location changes ─────────────────────
   const obsId = obs?.id;
   const obsLocation = obs?.location;
   useEffect(() => {
-    if (!map.current || !obsLocation) return;
+    if (!map.current || !obsLocation || !mapsLoaded) return;
     const { latitude: lat, longitude: lon } = obsLocation;
 
-    if (pinMarker.current) pinMarker.current.remove();
-    pinMarker.current = new maplibregl.Marker({ color: '#10b981', draggable: true })
-      .setLngLat([lon, lat])
-      .addTo(map.current);
+    if (pinMarker.current) pinMarker.current.setMap(null);
+    pinMarker.current = new window.google.maps.Marker({
+      position: { lat, lng: lon },
+      map: map.current,
+      draggable: true,
+      title: obs?.landmark || 'Observation Location'
+    });
 
-    pinMarker.current.on('dragend', () => {
-      const lngLat = pinMarker.current.getLngLat();
-      if (window.confirm(`Update location to\n${lngLat.lat.toFixed(6)}, ${lngLat.lng.toFixed(6)}?`)) {
-        handleSetLocation(lngLat.lat, lngLat.lng, 'USER_DRAGGED');
+    pinMarker.current.addListener('dragend', () => {
+      const lngLat = pinMarker.current.getPosition();
+      if (window.confirm(`Update location to\n${lngLat.lat().toFixed(6)}, ${lngLat.lng().toFixed(6)}?`)) {
+        handleSetLocation(lngLat.lat(), lngLat.lng(), 'USER_DRAGGED');
+      } else {
+        pinMarker.current.setPosition({ lat, lng: lon });
       }
     });
 
-    map.current.flyTo({ center: [lon, lat], zoom: 13, duration: 1200 });
-  }, [obsLocation]);
+    map.current.panTo({ lat, lng: lon });
+    if (obs?.landmark === 'SARDAR SAROVAR DAM') {
+      map.current.setZoom(15);
+    } else {
+      map.current.setZoom(13);
+    }
+  }, [obsLocation, mapsLoaded, obs?.landmark]);
 
   // ─ Autosave ──────────────────────────────────────────────────
   const autosave = useCallback((id, updates) => {
@@ -296,10 +309,17 @@ export default function Field() {
     }
   };
 
-  const mapZoomIn  = () => map.current?.zoomIn();
-  const mapZoomOut = () => map.current?.zoomOut();
+  const mapZoomIn  = () => map.current?.setZoom((map.current?.getZoom() || 5) + 1);
+  const mapZoomOut = () => map.current?.setZoom((map.current?.getZoom() || 5) - 1);
   const mapCenter  = () => {
-    if (obsLocation) map.current?.flyTo({ center: [obsLocation.longitude, obsLocation.latitude], zoom: 14 });
+    if (obsLocation) {
+      map.current?.panTo({ lat: obsLocation.latitude, lng: obsLocation.longitude });
+      if (obs?.landmark === 'SARDAR SAROVAR DAM') {
+         map.current?.setZoom(15);
+      } else {
+         map.current?.setZoom(14);
+      }
+    }
   };
 
   const steps = getStepperState(obs, uploadState);
@@ -309,8 +329,8 @@ export default function Field() {
 
   const stepDescs = [
     uploadState === 'uploading' ? 'UPLOADING…' : obs ? 'ACQUIRED' : 'AWAITING UPLOAD',
-    exifData?.status === 'GPS_FOUND' ? 'GPS FOUND' : exifData ? 'GPS NOT IN PHOTO' : '—',
-    loc ? `${loc.latitude.toFixed(4)}, ${loc.longitude.toFixed(4)}` : 'PIN REQUIRED',
+    obs?.landmark ? 'LANDMARK RESOLVED' : (exifData?.status === 'GPS_FOUND' ? 'GPS FOUND' : exifData ? 'GPS NOT IN PHOTO' : '—'),
+    loc ? (obs?.landmark?.name || obs?.landmark || `${loc.latitude.toFixed(4)}, ${loc.longitude.toFixed(4)}`) : 'PIN REQUIRED',
     obs?.satelliteContext?.status === 'AVAILABLE' ? 'CONTEXT LOADED' : loc ? 'PENDING' : '—',
     obs?.watershedId ? (obs.watershedName || obs.watershedId) : loc ? 'RESOLVING…' : '—',
     obs?.evidenceId ? 'COMMITTED' : obs?.aiAnalysis ? 'READY' : 'PENDING'
@@ -496,12 +516,14 @@ export default function Field() {
                     </div>
                   )}
 
-                  {analysisState === 'error' && (
-                    <div className="overlay-bl segment-box" style={{ borderColor: 'rgba(239,68,68,0.3)' }}>
+                  {(analysisState === 'error' || obs?.aiAnalysis?.analysisStatus === 'AI_UNAVAILABLE') && (
+                    <div className="overlay-bl segment-box" style={{ borderColor: 'rgba(239,68,68,0.3)', background: 'rgba(255,255,255,0.95)' }}>
                       <div className="seg-title" style={{ color: '#f87171' }}>
-                        <AlertTriangle size={12} /> AI ANALYSIS UNAVAILABLE
+                        <AlertTriangle size={12} /> {obs?.aiAnalysis?.analysisStatus === 'AI_UNAVAILABLE' ? 'VISION API REQUIRED' : 'AI ANALYSIS UNAVAILABLE'}
                       </div>
-                      <div className="seg-desc" style={{ color: '#6b7280' }}>{analysisError}</div>
+                      <div className="seg-desc" style={{ color: '#6b7280' }}>
+                        {obs?.aiAnalysis?.error || analysisError || 'Vision service is not configured or reachable.'}
+                      </div>
                     </div>
                   )}
                 </>
@@ -542,12 +564,18 @@ export default function Field() {
             <div className="fp-header">
               <div className="fp-title"><Satellite size={14} color="#38bdf8" /> ORBITAL VIEWPORT // MAP CONTEXT</div>
               <div className="fp-controls">
-                {['TRUE_COLOR', 'NDVI', 'NDMI'].map(mode => (
-                  <div key={mode} className={`fp-btn ${satelliteMode === mode ? 'primary' : ''}`}
-                    onClick={() => setSatelliteMode(mode)}>
-                    {mode.replace('_', ' ')}
-                  </div>
-                ))}
+                {['TRUE_COLOR', 'NDVI', 'NDMI'].map(mode => {
+                  const isAvailable = mode === 'TRUE_COLOR' || (obs?.satelliteContext?.status === 'AVAILABLE' && false); // Backend doesn't currently supply tile URLs
+                  return (
+                    <div key={mode} 
+                         className={`fp-btn ${satelliteMode === mode ? 'primary' : ''} ${!isAvailable ? 'disabled' : ''}`}
+                         title={!isAvailable ? `${mode} layer requires Earth Engine tile service integration` : ''}
+                         onClick={() => isAvailable && setSatelliteMode(mode)}
+                         style={{ opacity: isAvailable ? 1 : 0.5, cursor: isAvailable ? 'pointer' : 'not-allowed' }}>
+                      {mode.replace('_', ' ')}
+                    </div>
+                  );
+                })}
                 <div className="fp-btn" onClick={() => setShowPinTool(v => !v)}
                   style={{ color: showPinTool ? '#38bdf8' : undefined }} title="Pin location">
                   <MapPin size={12} />
@@ -556,7 +584,23 @@ export default function Field() {
             </div>
 
             <div className="fp-body">
-              <div ref={mapContainer} className="orbital-map-container"></div>
+              {mapsError ? (
+                <div className="map-no-gps-panel" style={{ background: 'rgba(0,0,0,0.8)', padding: 32, border: '1px solid #f87171' }}>
+                  <AlertTriangle size={24} color="#f87171" />
+                  <div style={{ fontWeight: 600, color: '#f87171', marginTop: 12 }}>GOOGLE MAPS API KEY REQUIRED</div>
+                  <div style={{ color: '#94a3b8', fontSize: 11, marginTop: 8 }}>
+                    Enable/configure the required Google Maps API services and provide the browser key in the environment configuration.
+                  </div>
+                  <div style={{ color: '#6b7280', fontSize: 10, marginTop: 4 }}>
+                    {mapsError.message}
+                  </div>
+                  <button className="ngps-btn" onClick={() => window.location.reload()} style={{ marginTop: 16 }}>
+                    CHECK AGAIN
+                  </button>
+                </div>
+              ) : (
+                <div ref={mapContainer} className="orbital-map-container" style={{ background: '#e5e7eb' }}></div>
+              )}
 
               {showPinTool && (
                 <div className="map-pin-tool-banner">
@@ -568,8 +612,9 @@ export default function Field() {
               <div className="om-overlay-top">
                 <div className="om-row">
                   <span>
-                    <span className="om-green">●</span>
-                    {obs?.satelliteContext?.status === 'AVAILABLE' ? 'SATELLITE CONTEXT LOADED' : 'BASEMAP'}
+                    <span className={obs?.satelliteContext?.status === 'UNAVAILABLE' ? 'om-red' : 'om-green'} style={{ color: obs?.satelliteContext?.status === 'UNAVAILABLE' ? '#f87171' : '#10b981' }}>●</span>
+                    {obs?.satelliteContext?.status === 'AVAILABLE' ? ' SATELLITE CONTEXT LOADED' : 
+                     obs?.satelliteContext?.status === 'UNAVAILABLE' ? ' SATELLITE ANALYSIS UNAVAILABLE' : ' BASEMAP'}
                   </span>
                   <span className="om-gray">MODE: <span className="om-green" style={{ fontWeight: 600 }}>{satelliteMode}</span></span>
                 </div>
@@ -582,11 +627,11 @@ export default function Field() {
                 </div>
               )}
 
-              {obs && !loc && (
+              {obs && !loc && !mapsError && (
                 <div className="map-no-gps-panel">
                   <AlertTriangle size={16} color="#f59e0b" />
                   <div style={{ fontWeight: 600, color: '#f59e0b', marginTop: 8 }}>LOCATION REQUIRED</div>
-                  <div style={{ color: '#94a3b8', fontSize: 11, marginTop: 4 }}>Photo has no GPS data</div>
+                  <div style={{ color: '#94a3b8', fontSize: 11, marginTop: 4 }}>Photo has no GPS data and no landmark found</div>
                   <div className="no-gps-actions">
                     <button className="ngps-btn" onClick={handleUseCurrentLocation}>
                       <Navigation size={12} /> USE CURRENT LOCATION
@@ -602,6 +647,31 @@ export default function Field() {
                       value={manualCoords.lon} onChange={e => setManualCoords(v => ({ ...v, lon: e.target.value }))} />
                     <button className="ngps-btn" onClick={handleManualCoords}>OK</button>
                   </div>
+                </div>
+              )}
+
+              {obs?.landmark && (
+                <div className="map-no-gps-panel" style={{ top: '60px', bottom: 'auto', left: '10px', transform: 'none', alignItems: 'flex-start', padding: '16px', background: 'rgba(255,255,255,0.95)', border: '1px solid rgba(56,189,248,0.3)', backdropFilter: 'blur(8px)', width: '260px' }}>
+                  <div style={{ color: '#38bdf8', fontSize: '9px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <Navigation size={10} /> LANDMARK IDENTIFIED FROM PHOTO
+                  </div>
+                  <div style={{ color: '#000', fontWeight: 600, marginTop: '8px', fontSize: '13px' }}>
+                    {obs.landmark.name || obs.landmark}
+                  </div>
+                  <div style={{ color: '#4b5563', fontSize: '11px', marginTop: '2px' }}>
+                    {obs.landmark.river ? `${obs.landmark.river} River · ` : ''}{obs.landmark.region || ''}
+                  </div>
+                  <div style={{ display: 'flex', gap: '16px', marginTop: '12px' }}>
+                    <div>
+                      <div style={{ color: '#9ca3af', fontSize: '9px' }}>LATITUDE</div>
+                      <div style={{ color: '#000', fontSize: '11px', fontFamily: 'monospace' }}>{loc?.latitude?.toFixed(4)}° N</div>
+                    </div>
+                    <div>
+                      <div style={{ color: '#9ca3af', fontSize: '9px' }}>LONGITUDE</div>
+                      <div style={{ color: '#000', fontSize: '11px', fontFamily: 'monospace' }}>{loc?.longitude?.toFixed(4)}° E</div>
+                    </div>
+                  </div>
+                  <div style={{ color: '#10b981', fontSize: '9px', marginTop: '12px' }}>SOURCE: AI VISION + LANDMARK REGISTRY</div>
                 </div>
               )}
 
@@ -621,7 +691,7 @@ export default function Field() {
               </div>
               <div className="footer-col" style={{ width: '30%' }}>
                 <span className="fc-label" style={{ color: '#10b981' }}>SOURCE:</span>
-                <span className="fc-val" style={{ color: '#10b981' }}>{loc?.source || '—'}</span>
+                <span className="fc-val" style={{ color: '#10b981' }}>{obs?.landmark ? 'LANDMARK REGISTRY' : (loc?.source || '—')}</span>
               </div>
               <div className="footer-col" style={{ width: '30%' }}>
                 {loc && !obs?.satelliteContext && (
