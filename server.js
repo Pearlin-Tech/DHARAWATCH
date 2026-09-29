@@ -692,10 +692,43 @@ app.post('/api/field/:id/analyze', async (req, res) => {
       if (!obs.synthesis && result.data.observationSummary) {
         updated.synthesis = result.data.observationSummary;
       }
+      
+      const { resolveLandmarkFromAI } = await import('./server/fieldService.js');
+      const landmark = resolveLandmarkFromAI(result.data);
+      if (landmark) {
+         updated.landmark = landmark;
+         // Override location if no GPS or if we trust landmark more for demo
+         if (!updated.location || updated.location.source !== 'PHOTO_EXIF') {
+            updated.location = {
+               latitude: landmark.latitude,
+               longitude: landmark.longitude,
+               source: 'LANDMARK_REGISTRY'
+            };
+            
+            // Re-resolve watershed
+            try {
+              const ws = await resolveWatershedForObservation(landmark.latitude, landmark.longitude);
+              if (ws && ws.dataStatus === 'AVAILABLE') {
+                updated.watershedId = ws.id;
+                updated.watershedName = ws.name;
+              }
+            } catch (e) { console.error('Watershed resolution failed:', e.message); }
+            
+            // Auto-fetch satellite context for demo flow
+            try {
+              const satCtx = await getSatelliteContextForLocation(landmark.latitude, landmark.longitude);
+              if (satCtx && satCtx.status === 'AVAILABLE') {
+                updated.satelliteContext = satCtx;
+              } else {
+                updated.satelliteContext = { status: 'UNAVAILABLE', error: satCtx?.error || 'Unknown error' };
+              }
+            } catch (e) { console.error('Satellite context failed:', e.message); }
+         }
+      }
     }
 
     await updateRow('field_observations', obs.id, updated);
-    fieldOk(res, { analysisStatus: result.status, analysis: result.data, error: result.error });
+    fieldOk(res, { analysisStatus: result.status, analysis: result.data, error: result.error, locationUpdated: !!updated.location });
   } catch (err) {
     console.error('[Field] analyze error:', err.message);
     fieldError(res, 'ANALYZE_ERROR', err.message);

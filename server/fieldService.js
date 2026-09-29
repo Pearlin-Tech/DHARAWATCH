@@ -182,6 +182,8 @@ STRICT RULES:
 
 Return this JSON schema exactly:
 {
+  "landmarkCandidates": [{"name": "string", "confidence": "high/medium/low", "visualReasons": "string"}],
+  "landmarkType": "dam/bridge/river/none",
   "scene": "one-sentence description of the overall scene",
   "landform": "terrain type visible (flat, hilly, riverine, valley, etc.)",
   "visibleWater": { "present": boolean, "type": "river/pond/standing/channel/none", "notes": "brief visual description or null" },
@@ -199,6 +201,23 @@ Return this JSON schema exactly:
   "needsHumanReview": boolean
 }
 `;
+
+export const LANDMARK_REGISTRY = {
+  'SARDAR SAROVAR DAM': { latitude: 21.83, longitude: 73.75, region: 'Gujarat, India', river: 'Narmada' }
+};
+
+export function resolveLandmarkFromAI(aiData) {
+  if (!aiData || !aiData.landmarkCandidates || aiData.landmarkCandidates.length === 0) return null;
+  const topCandidate = aiData.landmarkCandidates[0];
+  if (topCandidate.confidence === 'low') return null;
+  
+  const nameLower = topCandidate.name.toLowerCase();
+  if (['sardar sarovar', 'sardar sarovar dam', 'narmada dam', 'sardar sarovar project'].includes(nameLower)) {
+    return { name: 'SARDAR SAROVAR DAM', ...LANDMARK_REGISTRY['SARDAR SAROVAR DAM'] };
+  }
+  return null;
+}
+
 
 export async function analyzeImageWithAI(buffer, mimeType, photoHash) {
   if (!AI_KEY) {
