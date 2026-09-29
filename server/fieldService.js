@@ -133,7 +133,7 @@ const AI_KEY = process.env.AI_API_KEY;
 const AI_VISION_CACHE = new Map(); // hash → analysis
 
 async function callGeminiVision(base64Image, mimeType, prompt) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${AI_KEY}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${AI_KEY}`;
   const body = {
     contents: [{
       parts: [
@@ -252,6 +252,44 @@ export async function analyzeImageWithAI(buffer, mimeType, photoHash) {
   } catch (err) {
     console.error('[Field] AI vision error:', err.message);
     return { status: 'AI_ERROR', error: err.message, data: null };
+}
+}
+
+// ─── Reverse Geocoding ─────────────────────────────────────────────
+export async function reverseGeocode(lat, lon) {
+  const apiKey = process.env.VITE_GOOGLE_MAPS_API_KEY;
+  if (!apiKey) return null;
+  
+  try {
+    const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lon}&key=${apiKey}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    const data = await res.json();
+    
+    if (data.status === 'OK' && data.results.length > 0) {
+      const result = data.results[0];
+      const address_components = result.address_components;
+      
+      let district, state, country, village;
+      for (const comp of address_components) {
+        if (comp.types.includes('country')) country = comp.long_name;
+        if (comp.types.includes('administrative_area_level_1')) state = comp.long_name;
+        if (comp.types.includes('administrative_area_level_2') || comp.types.includes('administrative_area_level_3')) district = comp.long_name;
+        if (comp.types.includes('locality') || comp.types.includes('sublocality')) village = comp.long_name;
+      }
+      
+      return {
+        address: result.formatted_address,
+        village: village || null,
+        district: district || null,
+        state: state || null,
+        country: country || null,
+        placeName: village || district || state
+      };
+    }
+    return null;
+  } catch (err) {
+    console.warn('[Field] Reverse geocoding failed:', err.message);
+    return null;
   }
 }
 
@@ -270,11 +308,8 @@ export async function resolveWatershedForObservation(lat, lon) {
 // ─── Satellite Context (basic EE call) ────────────────────────────
 export async function getSatelliteContextForLocation(lat, lon) {
   try {
-    const { getFingerprintSummary } = await import('./watershedService.js');
-    const fp = await getFingerprintSummary('field-point', {
-      type: 'Point', coordinates: [lon, lat]
-    });
-    return { status: 'AVAILABLE', data: fp };
+    const { getFieldSatelliteContext } = await import('./watershedService.js');
+    return await getFieldSatelliteContext(lat, lon);
   } catch (err) {
     console.warn('[Field] Satellite context failed:', err.message);
     return { status: 'UNAVAILABLE', error: err.message };

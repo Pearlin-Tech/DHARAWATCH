@@ -1,190 +1,664 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import maplibregl from '../../lib/maplibre';
-import { 
+import { useGoogleMaps } from '../../hooks/useGoogleMaps';
+import {
   Crosshair, Camera, Droplets, Clock, Target, Car,
-  ArrowRight, Flag, ShieldCheck, Download, Save,
-  Play, CheckCircle2, ChevronDown, Layers, MapPin, 
-  ZoomIn, ZoomOut, Maximize, AlertTriangle, Check
+  ArrowRight, ShieldCheck, Download, Save,
+  Play, CheckCircle2, ChevronDown, Layers, MapPin,
+  ZoomIn, ZoomOut, Maximize, AlertTriangle, Check,
+  Search, X, Route, Timer, Footprints, Shield
 } from 'lucide-react';
 import AppNavigation from '../../components/AppNavigation';
 import './Mission.css';
 
-// -----------------------------------------------------------------------------
-// DATA ADAPTER BOUNDARY
-// -----------------------------------------------------------------------------
-// When backend is connected, swap this fixture with the real MissionDataProvider
-const MISSION_DEMO_FIXTURE = {
-  isMock: true,
-  candidates: [
-    { id: 'C01', title: 'Chakulia North (DEMO)', desc: 'Gully headcut breach / Upstream', coords: [86.16, 22.82], reason: 'Spectral Anomaly', priority: 'HIGH', gap: 'No records in 6 mo', val: 'VALID', dist: '6.4 km' },
-    { id: 'C02', title: 'Tributary 3 Check Dam (DEMO)', desc: 'Evidence gap #INT-014 / Silt build', coords: [86.18, 22.81], reason: 'Critical Ground Evidence Gap', priority: 'CRITICAL', gap: 'Zero records in 14 months', val: 'VALID', dist: '12.2 km' },
-    { id: 'C03', title: 'Mid-Basin Storage (DEMO)', desc: 'Structure capacity discrepancy check', coords: [86.19, 22.79], reason: 'Siltation Discrepancy', priority: 'HIGH', gap: 'No records in 3 mo', val: 'VALID', dist: '18.0 km' },
-    { id: 'C04', title: 'Lower Alluvial Plain (DEMO)', desc: 'Control baseline ground truth', coords: [86.20, 22.77], reason: 'Control Site Baseline', priority: 'MED', gap: 'Annual check due', val: 'VALID', dist: '27.0 km' },
-    { id: 'C05', title: 'Eastern Embankment (DEMO)', desc: 'Vegetation clearance verification', coords: [86.15, 22.79], reason: 'Vegetation Change', priority: 'LOW', gap: 'No records in 1 mo', val: 'NEEDS REVIEW', dist: '8.1 km' },
-  ],
-  synthesis: {
-    distance: "28.4 km",
-    duration: "4h 35m"
-  }
-};
+// ─── Constants ──────────────────────────────────────────────────────────────
+const WINDOW_OPTIONS = [
+  { label: '1 HOUR', minutes: 60 },
+  { label: '2 HOURS', minutes: 120 },
+  { label: '3 HOURS', minutes: 180 },
+  { label: '4 HOURS', minutes: 240 },
+  { label: '5 HOURS', minutes: 300 },
+  { label: '6 HOURS', minutes: 360 },
+  { label: '8 HOURS', minutes: 480 },
+];
 
+const STOP_OPTIONS = [1, 2, 3, 4, 5, 6, 8, 10];
+
+const TRANSIT_OPTIONS = [
+  { label: 'Vehicle + Walking', value: 'DRIVING_WALKING' },
+  { label: 'Driving Only', value: 'DRIVING' },
+  { label: 'Walking', value: 'WALKING' },
+  { label: 'Cycling', value: 'BICYCLING' },
+];
+
+// ─── Dropdown Portal ────────────────────────────────────────────────────────
+function Dropdown({ anchorRef, open, onClose, children, width = 280 }) {
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e) => {
+      if (ref.current && !ref.current.contains(e.target) &&
+          anchorRef.current && !anchorRef.current.contains(e.target)) {
+        onClose();
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open, onClose, anchorRef]);
+
+  if (!open || !anchorRef.current) return null;
+  const rect = anchorRef.current.getBoundingClientRect();
+
+  return (
+    <div
+      ref={ref}
+      style={{
+        position: 'fixed',
+        top: rect.bottom + 6,
+        left: rect.left,
+        width: Math.max(width, rect.width),
+        zIndex: 99999,
+        background: 'rgba(9,15,28,0.97)',
+        backdropFilter: 'blur(20px)',
+        border: '1px solid rgba(56,189,248,0.3)',
+        borderRadius: 8,
+        boxShadow: '0 8px 40px rgba(0,0,0,0.7), 0 0 0 1px rgba(56,189,248,0.08)',
+        animation: 'ddFadeIn 0.15s ease',
+        overflow: 'hidden',
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+// ─── Searchable Watershed Selector ──────────────────────────────────────────
+function WatershedSelector({ value, onChange }) {
+  const anchorRef = useRef(null);
+  const inputRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const debounceRef = useRef(null);
+
+  const search = useCallback(async (query) => {
+    if (!query || query.length < 2) { setResults([]); return; }
+    setLoading(true);
+    try {
+      const res = await fetch('/api/mission/watersheds/search?q=' + encodeURIComponent(query));
+      const data = await res.json();
+      setResults(Array.isArray(data) ? data : []);
+    } catch { setResults([]); }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => search(q), 350);
+  }, [q, search]);
+
+  useEffect(() => {
+    if (open && inputRef.current) setTimeout(() => inputRef.current?.focus(), 80);
+  }, [open]);
+
+  return (
+    <>
+      <div
+        ref={anchorRef}
+        className="config-box"
+        onClick={() => setOpen(o => !o)}
+        style={{ minWidth: 220, cursor: 'pointer' }}
+      >
+        <div className="cb-label"><Droplets size={11}/> TARGET WATERSHED</div>
+        <div className="cb-val">
+          <span style={{ color: value ? '#fff' : '#6b7280', fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 160 }}>
+            {value ? value.name : 'SELECT TARGET'}
+          </span>
+          <ChevronDown size={13} color="#6b7280" style={{ flexShrink: 0, transition: 'transform 0.18s', transform: open ? 'rotate(180deg)' : '' }}/>
+        </div>
+      </div>
+      <Dropdown anchorRef={anchorRef} open={open} onClose={() => setOpen(false)} width={320}>
+        <div style={{ padding: '10px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 5, padding: '6px 10px' }}>
+            <Search size={13} color="#6b7280"/>
+            <input
+              ref={inputRef}
+              value={q}
+              onChange={e => setQ(e.target.value)}
+              placeholder="Search watershed..."
+              style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: '#fff', fontSize: 12, fontFamily: 'Inter, sans-serif' }}
+            />
+            {q && <X size={13} color="#6b7280" style={{ cursor: 'pointer' }} onClick={() => setQ('')}/>}
+          </div>
+        </div>
+        <div style={{ maxHeight: 260, overflowY: 'auto' }}>
+          {loading && (
+            <div style={{ padding: '12px 16px', color: '#6b7280', fontFamily: 'monospace', fontSize: 11, textAlign: 'center' }}>
+              Searching...
+            </div>
+          )}
+          {!loading && results.length === 0 && q.length >= 2 && (
+            <div style={{ padding: '12px 16px', color: '#6b7280', fontFamily: 'monospace', fontSize: 11 }}>
+              No watersheds found for "{q}"
+            </div>
+          )}
+          {!loading && q.length < 2 && (
+            <div style={{ padding: '12px 16px', color: '#4b5563', fontFamily: 'monospace', fontSize: 10 }}>
+              TYPE TO SEARCH — e.g. Narmada, Sardar Sarovar, Tapi
+            </div>
+          )}
+          {results.map((r, i) => (
+            <div
+              key={i}
+              onClick={() => { onChange(r); setOpen(false); setQ(''); }}
+              style={{
+                padding: '10px 16px', cursor: 'pointer', borderBottom: '1px solid rgba(255,255,255,0.04)',
+                background: value?.name === r.name ? 'rgba(56,189,248,0.08)' : 'transparent',
+                transition: 'background 0.15s'
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}
+              onMouseLeave={e => e.currentTarget.style.background = value?.name === r.name ? 'rgba(56,189,248,0.08)' : 'transparent'}
+            >
+              <div style={{ color: '#fff', fontSize: 12, fontFamily: 'Inter', fontWeight: 600, marginBottom: 2 }}>{r.name}</div>
+              {r.river && <div style={{ color: '#6b7280', fontSize: 10, fontFamily: 'monospace' }}>{r.river}{r.state ? ` · ${r.state}` : ''}</div>}
+            </div>
+          ))}
+        </div>
+      </Dropdown>
+    </>
+  );
+}
+
+// ─── Searchable Origin Selector ─────────────────────────────────────────────
+function OriginSelector({ value, onChange }) {
+  const anchorRef = useRef(null);
+  const inputRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const debounceRef = useRef(null);
+
+  const search = useCallback(async (query) => {
+    if (!query || query.length < 3) { setResults([]); return; }
+    setLoading(true);
+    try {
+      const res = await fetch('/api/mission/origins/search?q=' + encodeURIComponent(query));
+      const data = await res.json();
+      setResults(Array.isArray(data) ? data : []);
+    } catch { setResults([]); }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => search(q), 400);
+  }, [q, search]);
+
+  useEffect(() => {
+    if (open && inputRef.current) setTimeout(() => inputRef.current?.focus(), 80);
+  }, [open]);
+
+  const handleSelect = async (r) => {
+    // If it has an id, resolve coordinates
+    if (r.id && !r.lat) {
+      try {
+        const res = await fetch('/api/mission/origins/resolve?placeId=' + encodeURIComponent(r.id));
+        const data = await res.json();
+        if (data && data.lat) { onChange(data); setOpen(false); setQ(''); return; }
+      } catch {}
+    }
+    onChange({ ...r, lat: r.lat || 22.8, lng: r.lng || 86.18 });
+    setOpen(false); setQ('');
+  };
+
+  return (
+    <>
+      <div
+        ref={anchorRef}
+        className="config-box"
+        onClick={() => setOpen(o => !o)}
+        style={{ minWidth: 180, cursor: 'pointer' }}
+      >
+        <div className="cb-label"><Target size={11}/> ORIGIN BASE</div>
+        <div className="cb-val">
+          <span style={{ color: value ? '#fff' : '#6b7280', fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>
+            {value ? value.name : 'SELECT ORIGIN'}
+          </span>
+          <ChevronDown size={13} color="#6b7280" style={{ flexShrink: 0, transition: 'transform 0.18s', transform: open ? 'rotate(180deg)' : '' }}/>
+        </div>
+      </div>
+      <Dropdown anchorRef={anchorRef} open={open} onClose={() => setOpen(false)} width={300}>
+        <div style={{ padding: '10px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 5, padding: '6px 10px' }}>
+            <Search size={13} color="#6b7280"/>
+            <input
+              ref={inputRef}
+              value={q}
+              onChange={e => setQ(e.target.value)}
+              placeholder="City, facility or base name..."
+              style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: '#fff', fontSize: 12, fontFamily: 'Inter, sans-serif' }}
+            />
+            {q && <X size={13} color="#6b7280" style={{ cursor: 'pointer' }} onClick={() => setQ('')}/>}
+          </div>
+        </div>
+        <div style={{ maxHeight: 240, overflowY: 'auto' }}>
+          {loading && <div style={{ padding: '12px 16px', color: '#6b7280', fontFamily: 'monospace', fontSize: 11, textAlign: 'center' }}>Searching...</div>}
+          {!loading && results.length === 0 && q.length >= 3 && (
+            <div style={{ padding: '12px 16px', color: '#6b7280', fontFamily: 'monospace', fontSize: 11 }}>No results. Using manual fallback.</div>
+          )}
+          {!loading && q.length < 3 && (
+            <div style={{ padding: '12px 16px', color: '#4b5563', fontFamily: 'monospace', fontSize: 10 }}>TYPE TO SEARCH — e.g. Bharuch, Vadodara</div>
+          )}
+          {results.map((r, i) => (
+            <div key={i} onClick={() => handleSelect(r)}
+              style={{ padding: '10px 16px', cursor: 'pointer', borderBottom: '1px solid rgba(255,255,255,0.04)', transition: 'background 0.15s' }}
+              onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+            >
+              <div style={{ color: '#fff', fontSize: 12, fontFamily: 'Inter', fontWeight: 600, marginBottom: 2 }}>{r.name}</div>
+              {r.address && <div style={{ color: '#6b7280', fontSize: 10, fontFamily: 'monospace' }}>{r.address}</div>}
+            </div>
+          ))}
+          {!loading && q.length >= 3 && results.length === 0 && (
+            <div
+              onClick={() => { onChange({ type: 'MANUAL', name: q, lat: 22.8, lng: 86.18 }); setOpen(false); setQ(''); }}
+              style={{ padding: '10px 16px', cursor: 'pointer', color: '#38bdf8', fontSize: 11, fontFamily: 'monospace', borderTop: '1px solid rgba(255,255,255,0.06)' }}
+            >
+              + Use "{q}" as manual origin
+            </div>
+          )}
+        </div>
+      </Dropdown>
+    </>
+  );
+}
+
+// ─── Simple Dropdown Selector ────────────────────────────────────────────────
+function SimpleSelector({ label, icon: Icon, value, display, options, onChange }) {
+  const anchorRef = useRef(null);
+  const [open, setOpen] = useState(false);
+
+  return (
+    <>
+      <div ref={anchorRef} className="config-box" onClick={() => setOpen(o => !o)} style={{ cursor: 'pointer', minWidth: 140 }}>
+        <div className="cb-label">{Icon && <Icon size={11}/>} {label}</div>
+        <div className="cb-val">
+          <span style={{ fontSize: 13, fontWeight: 600 }}>{display}</span>
+          <ChevronDown size={13} color="#6b7280" style={{ flexShrink: 0, transition: 'transform 0.18s', transform: open ? 'rotate(180deg)' : '' }}/>
+        </div>
+      </div>
+      <Dropdown anchorRef={anchorRef} open={open} onClose={() => setOpen(false)} width={180}>
+        {options.map((opt, i) => (
+          <div
+            key={i}
+            onClick={() => { onChange(opt); setOpen(false); }}
+            style={{
+              padding: '10px 16px', cursor: 'pointer', fontFamily: 'monospace', fontSize: 11, color: '#fff',
+              background: opt.value === value || opt.label === display ? 'rgba(56,189,248,0.1)' : 'transparent',
+              borderBottom: '1px solid rgba(255,255,255,0.04)', transition: 'background 0.15s',
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between'
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}
+            onMouseLeave={e => e.currentTarget.style.background = opt.value === value || opt.label === display ? 'rgba(56,189,248,0.1)' : 'transparent'}
+          >
+            {opt.label}
+            {(opt.value === value || opt.label === display) && <Check size={11} color="#38bdf8"/>}
+          </div>
+        ))}
+      </Dropdown>
+    </>
+  );
+}
+
+// ─── Generating Stage Tracker ────────────────────────────────────────────────
+const GEN_STAGES = [
+  'RESOLVING TARGET',
+  'RETRIEVING SATELLITE CONTEXT',
+  'FINDING EVIDENCE GAPS',
+  'BUILDING FIELD CANDIDATES',
+  'OPTIMIZING ROUTE',
+  'VALIDATING TIME WINDOW',
+];
+
+function GeneratingOverlay({ stage }) {
+  return (
+    <div style={{
+      position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', zIndex: 200, flexDirection: 'column', gap: 24
+    }}>
+      <div style={{ fontFamily: 'monospace', fontSize: 10, color: '#38bdf8', letterSpacing: '0.15em', marginBottom: 8 }}>
+        DHARAWATCH MISSION ENGINE
+      </div>
+      {GEN_STAGES.map((s, i) => {
+        const done = i < stage;
+        const active = i === stage;
+        return (
+          <div key={s} style={{ display: 'flex', alignItems: 'center', gap: 12, opacity: done || active ? 1 : 0.25, transition: 'opacity 0.3s' }}>
+            <div style={{ width: 18, height: 18, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: done ? '#10b981' : active ? 'transparent' : 'rgba(255,255,255,0.05)', border: active ? '2px solid #38bdf8' : done ? 'none' : '1px solid rgba(255,255,255,0.1)' }}>
+              {done ? <Check size={10} color="#000"/> : active ? <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#38bdf8', animation: 'pulse 1s ease infinite' }}/> : null}
+            </div>
+            <span style={{ fontFamily: 'monospace', fontSize: 11, color: done ? '#10b981' : active ? '#fff' : '#4b5563', fontWeight: active ? 700 : 400 }}>{s}</span>
+            {done && <span style={{ color: '#10b981', fontSize: 10, fontFamily: 'monospace' }}>✓</span>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Format helpers ───────────────────────────────────────────────────────────
+function fmtMin(min) {
+  if (!min && min !== 0) return '—';
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  if (h === 0) return `${m}m`;
+  if (m === 0) return `${h}h`;
+  return `${h}h ${m}m`;
+}
+
+// ─── Priority badge ───────────────────────────────────────────────────────────
+function PriBadge({ p }) {
+  const color = p === 'CRITICAL' ? '#f59e0b' : p === 'HIGH' ? '#38bdf8' : p === 'MED' ? '#a78bfa' : '#6b7280';
+  return (
+    <span style={{ fontSize: 9, fontFamily: 'monospace', fontWeight: 700, padding: '2px 6px', borderRadius: 3, border: `1px solid ${color}`, color, background: `${color}18` }}>
+      {p}
+    </span>
+  );
+}
+
+// ─── Score bars ───────────────────────────────────────────────────────────────
+function ScoreBars({ score }) {
+  const filled = Math.round((score / 100) * 5);
+  return (
+    <div style={{ display: 'flex', gap: 3 }}>
+      {[...Array(5)].map((_, i) => (
+        <div key={i} style={{ width: 10, height: 4, borderRadius: 2, background: i < filled ? '#38bdf8' : 'rgba(255,255,255,0.1)' }}/>
+      ))}
+    </div>
+  );
+}
+
+// ─── GPX export helper ────────────────────────────────────────────────────────
+function exportGPX(mission, candidates, selectedIds) {
+  const stops = selectedIds.map(id => candidates.find(c => c.id === id)).filter(Boolean);
+  const date = new Date().toISOString();
+  const wpts = stops.map((s, i) => `
+  <wpt lat="${s.coords[1]}" lon="${s.coords[0]}">
+    <name>STOP ${String(i + 1).padStart(2, '0')} - ${s.title}</name>
+    <desc>${s.reason}</desc>
+    <type>${s.type || 'OBSERVATION'}</type>
+  </wpt>`).join('');
+
+  const rtePoints = stops.map(s => `<rtept lat="${s.coords[1]}" lon="${s.coords[0]}"><name>${s.title}</name></rtept>`).join('');
+
+  const gpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="DHARAWATCH Mission Engine" xmlns="http://www.topografix.com/GPX/1/1">
+  <metadata>
+    <name>DHARAWATCH Field Mission</name>
+    <time>${date}</time>
+  </metadata>
+  ${wpts}
+  <rte>
+    <name>DHARAWATCH Mission Route</name>
+    ${rtePoints}
+  </rte>
+</gpx>`;
+
+  const blob = new Blob([gpx], { type: 'application/gpx+xml' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `dharawatch_mission_${Date.now()}.gpx`; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
 export default function Mission() {
+  const googleMapsApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+  const { loaded: mapsLoaded, error: mapsError } = useGoogleMaps(googleMapsApiKey);
+
   const navigate = useNavigate();
   const mapContainer = useRef(null);
   const map = useRef(null);
   const markersRef = useRef({});
-  const data = MISSION_DEMO_FIXTURE;
+  const originMarkerRef = useRef(null);
+  const routeLayerRef = useRef(null);
 
-  // Form State
-  const [target, setTarget] = useState('');
-  const [origin, setOrigin] = useState('');
-  const [windowLimit, setWindowLimit] = useState('5.0 HOURS');
+  // Form state — typed values
+  const [target, setTarget] = useState(null);
+  const [origin, setOrigin] = useState(null);
+  const [windowOpt, setWindowOpt] = useState(WINDOW_OPTIONS[4]);
   const [budget, setBudget] = useState(6);
-  const [transit, setTransit] = useState('Vehicle + Walking');
+  const [transitOpt, setTransitOpt] = useState(TRANSIT_OPTIONS[0]);
   const [formErrors, setFormErrors] = useState({});
 
-  // Mission State
-  // CONFIG -> GENERATING -> CANDIDATES -> ROUTING -> READY -> ACTIVE
+  // Mission flow state
   const [missionState, setMissionState] = useState('CONFIG');
-  const [genProgress, setGenProgress] = useState('');
+  const [genStage, setGenStage] = useState(0);
+  const [missionData, setMissionData] = useState(null);
+  const [savingState, setSavingState] = useState('');
 
-  // Candidates & Plan
   const [candidates, setCandidates] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
-  const [activeCandidateId, setActiveCandidateId] = useState(null);
+  const [activeStopId, setActiveStopId] = useState(null);
 
-  // Bottom Tabs
   const [activeTab, setActiveTab] = useState('candidate_pool');
+  const [history, setHistory] = useState([]);
 
-  // Initialize Map
+  // ─── Map init ─────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!map.current && mapContainer.current) {
-      map.current = new maplibregl.Map({
-        container: mapContainer.current,
-        style: {
-          version: 8,
-          sources: {
-            satellite: {
-              type: 'raster',
-              tiles: ['https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}'],
-              tileSize: 256,
-              attribution: 'Google'
-            }
-          },
-          layers: [{ id: 'satellite-layer', type: 'raster', source: 'satellite', minzoom: 0, maxzoom: 22 }]
-        },
-        center: [86.18, 22.80],
-        zoom: 12,
-        attributionControl: false
-      });
-      
-      map.current.on('load', () => {
-        map.current.addSource('route-source', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-        map.current.addLayer({
-          id: 'route-layer',
-          type: 'line',
-          source: 'route-source',
-          layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: { 'line-color': '#38bdf8', 'line-width': 3, 'line-dasharray': [2, 2] }
-        });
-      });
-    }
-  }, []);
+    if (!mapsLoaded || map.current || !mapContainer.current) return;
 
-  // Update map markers when candidates or selection changes
+    map.current = new window.google.maps.Map(mapContainer.current, {
+      center: { lat: 21.8, lng: 76.5 },
+      zoom: 6,
+      mapTypeId: 'satellite',
+      disableDefaultUI: true,
+      mapId: 'DHARAWATCH_MISSION_MAP' // Required for AdvancedMarkerElement
+    });
+
+    routeLayerRef.current = new window.google.maps.Polyline({
+      map: map.current,
+      path: [],
+      strokeColor: '#38bdf8',
+      strokeOpacity: 0.85,
+      strokeWeight: 4,
+      icons: [{
+        icon: { path: window.google.maps.SymbolPath.FORWARD_CLOSED_ARROW },
+        offset: '100%',
+        repeat: '100px'
+      }]
+    });
+  }, [mapsLoaded]);
+
+  // ─── Map markers ──────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!map.current) return;
-
+    if (!map.current || !mapsLoaded) return;
+    
     // Clear old markers
-    Object.values(markersRef.current).forEach(m => m.remove());
+    Object.values(markersRef.current).forEach(m => m.map = null);
     markersRef.current = {};
 
-    candidates.forEach(c => {
+    candidates.forEach((c, idx) => {
       const isSelected = selectedIds.includes(c.id);
-      const isActive = activeCandidateId === c.id;
+      const isActive = activeStopId === c.id;
+      const seqNum = selectedIds.indexOf(c.id);
 
       const el = document.createElement('div');
-      el.className = 'map-marker';
-      el.style.backgroundColor = isSelected ? '#10b981' : (isActive ? '#38bdf8' : '#0f172a');
-      el.style.border = `2px solid ${isActive || isSelected ? '#fff' : '#38bdf8'}`;
-      el.style.color = isActive || isSelected ? '#000' : '#fff';
-      el.style.width = isActive ? '28px' : '24px';
-      el.style.height = isActive ? '28px' : '24px';
-      el.style.borderRadius = '4px';
-      el.style.display = 'flex';
-      el.style.alignItems = 'center';
-      el.style.justifyContent = 'center';
-      el.style.fontFamily = 'monospace';
-      el.style.fontSize = '10px';
-      el.style.fontWeight = 'bold';
-      el.style.cursor = 'pointer';
-      el.style.boxShadow = isActive ? '0 0 15px rgba(56,189,248,0.8)' : '0 0 10px rgba(0,0,0,0.5)';
-      el.style.transition = 'all 0.2s ease';
-      el.innerText = c.id.replace('C', '');
+      el.style.cssText = `
+        width:${isActive ? 34 : 28}px;
+        height:${isActive ? 34 : 28}px;
+        border-radius:6px;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        font-family:monospace;
+        font-size:${isActive ? 12 : 10}px;
+        font-weight:700;
+        cursor:pointer;
+        transition:all 0.2s ease;
+        border:2px solid ${isActive ? '#fff' : isSelected ? '#10b981' : '#38bdf8'};
+        background:${isActive ? '#38bdf8' : isSelected ? '#064e3b' : 'rgba(9,15,28,0.9)'};
+        color:${isActive ? '#000' : isSelected ? '#10b981' : '#fff'};
+        box-shadow:${isActive ? '0 0 20px rgba(56,189,248,0.8)' : isSelected ? '0 0 10px rgba(16,185,129,0.4)' : '0 4px 12px rgba(0,0,0,0.6)'};
+      `;
+      el.innerText = isSelected ? String(seqNum + 1).padStart(2, '0') : String(idx + 1).padStart(2, '0');
 
       el.addEventListener('click', (e) => {
         e.stopPropagation();
-        setActiveCandidateId(c.id);
-        map.current.flyTo({ center: c.coords, zoom: 15, duration: 800 });
+        setActiveStopId(c.id);
+        map.current.panTo({ lat: c.coords[1], lng: c.coords[0] });
+        map.current.setZoom(15);
       });
 
-      const marker = new maplibregl.Marker({ element: el }).setLngLat(c.coords).addTo(map.current);
+      let marker;
+      if (window.google.maps.marker && window.google.maps.marker.AdvancedMarkerElement) {
+        marker = new window.google.maps.marker.AdvancedMarkerElement({
+          map: map.current,
+          position: { lat: c.coords[1], lng: c.coords[0] },
+          content: el,
+          title: c.title
+        });
+      } else {
+        // Fallback if advanced markers fail
+        marker = new window.google.maps.Marker({
+          map: map.current,
+          position: { lat: c.coords[1], lng: c.coords[0] },
+          title: c.title
+        });
+      }
+      
       markersRef.current[c.id] = marker;
     });
 
-  }, [candidates, selectedIds, activeCandidateId]);
-
-  // Update route
-  useEffect(() => {
-    if (!map.current || !map.current.getSource('route-source')) return;
-    if (missionState === 'READY' || missionState === 'ACTIVE') {
-      const orderedCoords = selectedIds.map(id => candidates.find(c => c.id === id).coords);
-      map.current.getSource('route-source').setData({
-        type: 'Feature',
-        geometry: { type: 'LineString', coordinates: orderedCoords }
-      });
-    } else {
-      map.current.getSource('route-source').setData({ type: 'FeatureCollection', features: [] });
+    // Origin marker
+    if (originMarkerRef.current) { originMarkerRef.current.map = null; originMarkerRef.current = null; }
+    if (origin && origin.lat && origin.lng) {
+      const el = document.createElement('div');
+      el.style.cssText = `
+        width:32px;height:32px;border-radius:50%;
+        background:#f59e0b;border:2px solid #fff;
+        display:flex;align-items:center;justify-content:center;
+        font-size:14px;
+        box-shadow:0 0 16px rgba(245,158,11,0.5);
+      `;
+      el.innerText = '◎';
+      
+      if (window.google.maps.marker && window.google.maps.marker.AdvancedMarkerElement) {
+        originMarkerRef.current = new window.google.maps.marker.AdvancedMarkerElement({
+          map: map.current,
+          position: { lat: origin.lat, lng: origin.lng },
+          content: el
+        });
+      } else {
+        originMarkerRef.current = new window.google.maps.Marker({
+          map: map.current,
+          position: { lat: origin.lat, lng: origin.lng },
+        });
+      }
     }
-  }, [selectedIds, candidates, missionState]);
+  }, [candidates, selectedIds, activeStopId, origin, mapsLoaded]);
 
-  const handleGenerate = () => {
+  // ─── Route update ─────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!map.current || !routeLayerRef.current) return;
+
+    if ((missionState === 'READY' || missionState === 'ACTIVE') && selectedIds.length > 0) {
+      let coords = [];
+      if (missionData?.map?.routeGeometry?.length > 0) {
+        coords = missionData.map.routeGeometry.map(c => ({ lat: c[1], lng: c[0] }));
+      } else {
+        // straight-line fallback
+        if (origin) coords.push({ lat: origin.lat, lng: origin.lng });
+        selectedIds.forEach(id => {
+          const c = candidates.find(x => x.id === id);
+          if (c) coords.push({ lat: c.coords[1], lng: c.coords[0] });
+        });
+        if (origin) coords.push({ lat: origin.lat, lng: origin.lng });
+      }
+      routeLayerRef.current.setPath(coords);
+    } else {
+      routeLayerRef.current.setPath([]);
+    }
+  }, [selectedIds, candidates, missionState, missionData, origin]);
+
+  // ─── Generate mission ─────────────────────────────────────────────────────
+  const handleGenerate = async () => {
     const errs = {};
     if (!target) errs.target = true;
     if (!origin) errs.origin = true;
-    if (Object.keys(errs).length > 0) {
-      setFormErrors(errs);
-      return;
-    }
+    if (Object.keys(errs).length > 0) { setFormErrors(errs); return; }
     setFormErrors({});
-    
     setMissionState('GENERATING');
-    const steps = [
-      'RESOLVING TARGET...',
-      'QUERYING EARTH ENGINE...',
-      'ANALYZING SATELLITE CHANGE...',
-      'FINDING EVIDENCE GAPS...',
-      'RANKING CANDIDATES...'
-    ];
-    let step = 0;
-    setGenProgress(steps[0]);
-    const intv = setInterval(() => {
-      step++;
-      if (step < steps.length) {
-        setGenProgress(steps[step]);
-      } else {
-        clearInterval(intv);
-        setCandidates(data.candidates);
-        setMissionState('CANDIDATES');
-        setActiveTab('candidate_pool');
-        if (map.current) {
-          map.current.flyTo({ center: [86.18, 22.80], zoom: 13, duration: 1500 });
-        }
+    setGenStage(0);
+
+    // Animate stages in parallel with real fetch
+    const stageTimer = (stage) => new Promise(r => setTimeout(() => { setGenStage(stage); r(); }, stage * 700));
+
+    try {
+      const [res] = await Promise.all([
+        fetch('/api/mission/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            targetId: target.id || target.name,
+            targetName: target.name,
+            targetLat: target.centroid?.lat ?? target.lat,
+            targetLon: target.centroid?.lng ?? target.lon,
+            origin,
+            constraints: {
+              durationMinutes: windowOpt.minutes,
+              maxStops: budget,
+              transitMode: transitOpt.value
+            }
+          })
+        }),
+        ...GEN_STAGES.map((_, i) => stageTimer(i))
+      ]);
+
+      setGenStage(GEN_STAGES.length); // all done
+      const json = await res.json();
+      if (!json.mission) throw new Error(json.error || 'No mission returned');
+
+      setMissionData(json.mission);
+
+      const mapped = json.mission.candidates.map((c, idx) => ({
+        id: c.id,
+        title: c.name,
+        desc: c.objective || c.reason,
+        coords: [parseFloat(c.lng), parseFloat(c.lat)],
+        reason: c.reason,
+        priority: c.priority >= 0.9 ? 'CRITICAL' : c.priority >= 0.7 ? 'HIGH' : c.priority >= 0.5 ? 'MED' : 'LOW',
+        gap: c.evidence,
+        score: c.score || 0,
+        confidence: c.confidence,
+        type: c.type,
+        objective: c.objective,
+      }));
+
+      setCandidates(mapped);
+      setSelectedIds(json.mission.selectedStops.map(s => s.id));
+      setActiveStopId(json.mission.selectedStops[0]?.id || null);
+      setMissionState('CANDIDATES');
+      setActiveTab('candidate_pool');
+
+      if (map.current && json.mission.map?.center) {
+        map.current.panTo({
+          lat: json.mission.map.center.lat,
+          lng: json.mission.map.center.lng
+        });
+        map.current.setZoom(12);
       }
-    }, 800);
+    } catch (err) {
+      console.error('[Mission] generate error:', err);
+      setMissionState('CONFIG');
+      alert('Mission generation failed: ' + err.message);
+    }
   };
 
+  // ─── Build route ───────────────────────────────────────────────────────────
   const handleBuildRoute = () => {
     if (selectedIds.length === 0) return;
     setMissionState('ROUTING');
@@ -192,47 +666,89 @@ export default function Mission() {
       setMissionState('READY');
       setActiveTab('active_plan');
       if (map.current) {
-        // Fit to route bounds
-        const bounds = new maplibregl.LngLatBounds();
-        selectedIds.forEach(id => bounds.extend(candidates.find(c => c.id === id).coords));
-        map.current.fitBounds(bounds, { padding: 80, duration: 1000 });
+        const bounds = new window.google.maps.LatLngBounds();
+        if (origin) bounds.extend({ lat: origin.lat, lng: origin.lng });
+        selectedIds.forEach(id => {
+          const c = candidates.find(x => x.id === id);
+          if (c) bounds.extend({ lat: c.coords[1], lng: c.coords[0] });
+        });
+        if (!bounds.isEmpty()) {
+          map.current.fitBounds(bounds, 100);
+        }
       }
-    }, 1500);
+    }, 800);
   };
 
-  const toggleCandidateSelection = (id) => {
+  // ─── Save draft ────────────────────────────────────────────────────────────
+  const handleSave = async () => {
+    if (!missionData) return;
+    setSavingState('saving');
+    try {
+      await fetch('/api/missions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...missionData, status: 'DRAFT' })
+      });
+      setSavingState('saved');
+      setTimeout(() => setSavingState(''), 2500);
+    } catch {
+      setSavingState('error');
+      setTimeout(() => setSavingState(''), 2500);
+    }
+  };
+
+  // ─── Start mission ─────────────────────────────────────────────────────────
+  const handleStart = async () => {
+    if (!missionData) return;
+    setMissionState('ACTIVE');
+    try {
+      await fetch('/api/missions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...missionData, status: 'IN_PROGRESS', startedAt: new Date().toISOString() })
+      });
+    } catch {}
+  };
+
+  // ─── Candidate toggle ──────────────────────────────────────────────────────
+  const toggleStop = (id) => {
     setSelectedIds(prev => {
-      if (prev.includes(id)) {
-        return prev.filter(x => x !== id);
-      } else {
-        if (prev.length >= budget) {
-          alert('Stop budget reached!');
-          return prev;
-        }
-        return [...prev, id];
-      }
+      if (prev.includes(id)) return prev.filter(x => x !== id);
+      if (prev.length >= budget) return prev;
+      return [...prev, id];
     });
   };
 
-  const activeCandidate = candidates.find(c => c.id === activeCandidateId);
-  const isSelected = selectedIds.includes(activeCandidateId);
+  // ─── Load history ──────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (activeTab === 'history') {
+      fetch('/api/missions').then(r => r.json()).then(d => setHistory(Array.isArray(d) ? d : [])).catch(() => {});
+    }
+  }, [activeTab]);
 
-  // Derive mode step 1 to 5
+  // ─── Derived values ────────────────────────────────────────────────────────
+  const activeCandidate = candidates.find(c => c.id === activeStopId);
+  const isActiveSelected = selectedIds.includes(activeStopId);
+  const route = missionData?.route;
+  const summary = missionData?.summary;
+
   let activeModeNum = 1;
   if (missionState === 'GENERATING') activeModeNum = 2;
   if (missionState === 'CANDIDATES' || missionState === 'ROUTING') activeModeNum = 3;
   if (missionState === 'READY') activeModeNum = 4;
   if (missionState === 'ACTIVE') activeModeNum = 5;
 
+  // ─── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="mission-container">
-      <AppNavigation />
-      
+      <AppNavigation/>
       <div className="mission-content">
-        <div ref={mapContainer} className="mission-map-container"></div>
+        <div ref={mapContainer} className="mission-map-container"/>
+
+        {missionState === 'GENERATING' && <GeneratingOverlay stage={genStage}/>}
+
         <div className="mission-ui-layer">
-          
-          {/* Top Section */}
+          {/* ── Top Panel ────────────────────────────────────── */}
           <div className="mission-top-section">
             <div className="mission-header-row">
               <div className="mh-left">
@@ -240,18 +756,19 @@ export default function Mission() {
                 <div className="mh-title">
                   FIELD / MISSION INTELLIGENCE
                   <span className="mh-status-badge">
-                    <span className="mh-status-dot"></span> ORBITAL GAP ANALYSIS SYNCED
+                    <span className="mh-status-dot"/>
+                    ORBITAL GAP ANALYSIS SYNCED
                   </span>
                 </div>
               </div>
               <div className="mh-right">
-                <div>CONSTELLATION: <span>SENTINEL-2 / SPOT-7 / PLANET</span></div>
+                <div>CONSTELLATION: <span>SENTINEL-2 / SPOT-7</span></div>
                 <div className="mh-operator">
                   <div style={{ textAlign: 'right' }}>
                     <div style={{ color: '#fff', fontWeight: 600 }}>CDR. A. VANCE</div>
                     <div>GEOINT SPEC // T1</div>
                   </div>
-                  <Crosshair size={18} color="#9ca3af" />
+                  <Crosshair size={18} color="#9ca3af"/>
                 </div>
               </div>
             </div>
@@ -259,12 +776,8 @@ export default function Mission() {
             <div className="mission-hero-row">
               <div className="mission-hero">
                 <h1>PLAN THE NEXT FIELD MISSION.</h1>
-                <p>
-                  Turn satellite change, evidence gaps and spatial context into a focused, highly optimized 
-                  field ground-truth plan.
-                </p>
+                <p>Turn satellite change, evidence gaps and spatial context into a focused, highly optimized field ground-truth plan.</p>
               </div>
-              
               <div className="mission-mode-stepper">
                 <div>
                   <div style={{ fontFamily: 'monospace', fontSize: 9, color: '#9ca3af', marginBottom: 6 }}>ACTIVE MODE</div>
@@ -274,230 +787,338 @@ export default function Mission() {
                       const active = step === activeModeNum;
                       const completed = step < activeModeNum;
                       return (
-                        <div key={step} className={`mode-step ${completed ? 'completed' : ''} ${active ? 'active' : ''}`}>
+                        <div key={step} className={`mode-step${completed ? ' completed' : ''}${active ? ' active' : ''}`}>
                           <div className="ms-num">0{step}</div>
-                          <div className="ms-dot"></div>
+                          <div className="ms-dot"/>
                           <div className="ms-label">{label}</div>
                         </div>
-                      )
+                      );
                     })}
                   </div>
                 </div>
-                <button className="capture-btn" onClick={() => navigate('/field')}><Camera size={14}/> CAPTURE<br/>EVIDENCE</button>
+                <button className="capture-btn" onClick={() => navigate('/field')}>
+                  <Camera size={14}/> CAPTURE<br/>EVIDENCE
+                </button>
               </div>
             </div>
 
+            {/* ── Config strip ── */}
             <div className="mission-config-strip">
-              <div className={`config-box ${formErrors.target ? 'error' : ''}`} onClick={() => setTarget('Subarnarekha Basin · MW-0842B')}>
-                <div className="cb-label"><Droplets size={12}/> TARGET WATERSHED</div>
-                <div className="cb-val">{target || 'SELECT TARGET'} <ChevronDown size={14} color="#9ca3af"/></div>
-              </div>
-              <div className={`config-box ${formErrors.origin ? 'error' : ''}`} onClick={() => setOrigin('Camp 01 (Chakulia)')}>
-                <div className="cb-label"><Target size={12}/> ORIGIN BASE</div>
-                <div className="cb-val">{origin || 'SELECT ORIGIN'} <ChevronDown size={14} color="#9ca3af"/></div>
-              </div>
-              <div className="config-box">
-                <div className="cb-label"><Clock size={12}/> FIELD WINDOW</div>
-                <div className="cb-val">{windowLimit} <ChevronDown size={14} color="#9ca3af"/></div>
-              </div>
-              <div className="config-box">
-                <div className="cb-label"><Layers size={12}/> BUDGET STOPS</div>
-                <div className="cb-val">{budget} STOPS MAX <ChevronDown size={14} color="#9ca3af"/></div>
-              </div>
-              <div className="config-box">
-                <div className="cb-label"><Car size={12}/> TRANSIT TYPE</div>
-                <div className="cb-val">{transit} <ChevronDown size={14} color="#9ca3af"/></div>
-              </div>
+              <WatershedSelector value={target} onChange={(t) => { setTarget(t); setMissionData(null); if (missionState !== 'CONFIG') setMissionState('CONFIG'); }}/>
+              <OriginSelector value={origin} onChange={(o) => { setOrigin(o); setMissionData(null); if (missionState !== 'CONFIG') setMissionState('CONFIG'); }}/>
 
-              {missionState === 'CONFIG' && (
-                <button className="gen-mission-btn" onClick={handleGenerate}>
-                  GENERATE MISSION <ArrowRight size={14}/>
+              <SimpleSelector
+                label="FIELD WINDOW" icon={Clock}
+                value={windowOpt.minutes} display={windowOpt.label}
+                options={WINDOW_OPTIONS.map(o => ({ ...o, value: o.minutes }))}
+                onChange={(o) => { setWindowOpt(o); if (missionState !== 'CONFIG') setMissionState('CONFIG'); }}
+              />
+              <SimpleSelector
+                label="BUDGET STOPS" icon={MapPin}
+                value={budget} display={`${budget} STOPS`}
+                options={STOP_OPTIONS.map(n => ({ label: `${n} STOP${n > 1 ? 'S' : ''}`, value: n }))}
+                onChange={(o) => { setBudget(o.value); if (missionState !== 'CONFIG') setMissionState('CONFIG'); }}
+              />
+              <SimpleSelector
+                label="TRANSIT TYPE" icon={Car}
+                value={transitOpt.value} display={transitOpt.label}
+                options={TRANSIT_OPTIONS}
+                onChange={(o) => { setTransitOpt(o); if (missionState !== 'CONFIG') setMissionState('CONFIG'); }}
+              />
+
+              {(missionState === 'CONFIG' || missionState === 'CANDIDATES' || missionState === 'ROUTING' || missionState === 'READY') && (
+                <button className="gen-mission-btn" onClick={handleGenerate} disabled={missionState === 'GENERATING'}>
+                  {missionState === 'CONFIG' ? (<>GENERATE MISSION <ArrowRight size={14}/></>) : (<>REPLAN MISSION <ArrowRight size={14}/></>)}
                 </button>
               )}
-              {missionState === 'GENERATING' && (
-                <div className="gen-mission-loading">
-                  <div className="spinner"></div> {genProgress}
+              {missionState === 'ACTIVE' && (
+                <div style={{ marginLeft: 'auto', background: 'rgba(16,185,129,0.1)', border: '1px solid #10b981', borderRadius: 6, padding: '8px 16px', fontFamily: 'monospace', fontSize: 11, color: '#10b981', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981', animation: 'pulse 1s infinite' }}/> MISSION IN PROGRESS
                 </div>
-              )}
-              {data.isMock && (
-                <div className="fs-pill warning" style={{ marginLeft: '12px', alignSelf: 'center', background: 'transparent', border: '1px solid #f59e0b', color: '#f59e0b', fontSize: '10px', padding: '4px 8px', borderRadius: '12px' }}>DEMO MODE</div>
               )}
             </div>
           </div>
 
-          {/* Map Controls */}
+          {/* ── Map controls ── */}
           <div className="map-controls">
-            <button onClick={() => map.current?.zoomIn()}><ZoomIn size={16}/></button>
-            <button onClick={() => map.current?.zoomOut()}><ZoomOut size={16}/></button>
-            <button onClick={() => map.current?.flyTo({ center: [86.18, 22.80], zoom: 12 })}><Maximize size={16}/></button>
+            <button onClick={() => { if(map.current) map.current.setZoom(map.current.getZoom() + 1); }}><ZoomIn size={16}/></button>
+            <button onClick={() => { if(map.current) map.current.setZoom(map.current.getZoom() - 1); }}><ZoomOut size={16}/></button>
+            <button onClick={() => {
+              if (missionData?.map?.center && map.current) {
+                map.current.panTo({ lat: missionData.map.center.lat, lng: missionData.map.center.lng });
+                map.current.setZoom(12);
+              }
+            }}><Maximize size={16}/></button>
           </div>
 
-          {/* Middle Section (Floating Panels) */}
+          {/* ── Middle floating panels ── */}
           <div className="mission-middle-section">
-            {(missionState === 'READY' || missionState === 'ACTIVE') && (
+
+            {/* Synthesis panel */}
+            {(missionState === 'READY' || missionState === 'ACTIVE') && missionData && (
               <div className="synthesis-panel">
                 <div className="syn-header">
-                  <div><Layers size={12} style={{display: 'inline', marginRight: 4, verticalAlign: 'text-bottom'}}/> MISSION SYNTHESIS</div>
+                  <div><Layers size={11} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }}/> MISSION SYNTHESIS</div>
                   <div className="syn-badge">AI OPTIMIZED</div>
                 </div>
-                <div className="syn-title">Why These {selectedIds.length} Stops?</div>
-                <div className="syn-desc">
-                  This itinerary prioritizes <strong>rapid change sectors</strong>, 
-                  verifies critical masonry interventions with absent ground evidence, 
-                  and anchors a lower alluvial control baseline.
+
+                <div style={{ fontFamily: 'Inter', fontSize: 17, fontWeight: 700, color: '#fff', lineHeight: 1.2 }}>
+                  {selectedIds.length} HIGH-VALUE STOP{selectedIds.length !== 1 ? 'S' : ''} SELECTED
                 </div>
-                <div className="syn-metrics">
-                  <div className="sm-col">
-                    <span className="sm-label">EST. DISTANCE (DEMO)</span>
-                    <span className="sm-val">{data.synthesis.distance}</span>
+                {budget > selectedIds.length && (
+                  <div style={{ fontFamily: 'monospace', fontSize: 9, color: '#6b7280', marginTop: -4 }}>
+                    {budget} STOP MAX · {selectedIds.length} SELECTED · {budget - selectedIds.length} SLOTS UNUSED
                   </div>
-                  <div className="sm-col">
-                    <span className="sm-label">PLANNED DURATION</span>
-                    <span className="sm-val highlight">{data.synthesis.duration}</span>
+                )}
+
+                <div style={{ fontFamily: 'Inter', fontSize: 12, color: '#d1d5db', lineHeight: 1.5, background: 'rgba(0,0,0,0.3)', borderRadius: 6, padding: 12 }}>
+                  Prioritizes the highest-value unverified changes while keeping the mission inside the {windowOpt.label.toLowerCase()} field window.
+                  {summary?.isFeasible === false && (
+                    <span style={{ color: '#f59e0b', display: 'block', marginTop: 4 }}> ⚠ Mission exceeds time budget — consider reducing stops.</span>
+                  )}
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                  <div style={{ background: 'rgba(0,0,0,0.25)', borderRadius: 6, padding: '8px 12px' }}>
+                    <div style={{ fontFamily: 'monospace', fontSize: 8, color: '#6b7280', marginBottom: 4 }}>DRIVE DISTANCE</div>
+                    <div style={{ fontFamily: 'monospace', fontSize: 15, color: '#38bdf8', fontWeight: 700 }}>
+                      <Route size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }}/>{route?.driveDistance || '—'}
+                    </div>
+                  </div>
+                  <div style={{ background: 'rgba(0,0,0,0.25)', borderRadius: 6, padding: '8px 12px' }}>
+                    <div style={{ fontFamily: 'monospace', fontSize: 8, color: '#6b7280', marginBottom: 4 }}>DRIVE TIME</div>
+                    <div style={{ fontFamily: 'monospace', fontSize: 15, color: '#38bdf8', fontWeight: 700 }}>
+                      <Timer size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }}/>{fmtMin(route?.driveDurationMinutes)}
+                    </div>
+                  </div>
+                  <div style={{ background: 'rgba(0,0,0,0.25)', borderRadius: 6, padding: '8px 12px' }}>
+                    <div style={{ fontFamily: 'monospace', fontSize: 8, color: '#6b7280', marginBottom: 4 }}>FIELD TIME</div>
+                    <div style={{ fontFamily: 'monospace', fontSize: 15, color: '#10b981', fontWeight: 700 }}>
+                      <Footprints size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }}/>{fmtMin(route?.fieldDurationMinutes)}
+                    </div>
+                  </div>
+                  <div style={{ background: 'rgba(0,0,0,0.25)', borderRadius: 6, padding: '8px 12px' }}>
+                    <div style={{ fontFamily: 'monospace', fontSize: 8, color: '#6b7280', marginBottom: 4 }}>TIME BUFFER</div>
+                    <div style={{ fontFamily: 'monospace', fontSize: 15, color: route?.bufferMinutes >= 0 ? '#f59e0b' : '#ef4444', fontWeight: 700 }}>
+                      <Shield size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }}/>{fmtMin(Math.max(0, route?.bufferMinutes))}
+                    </div>
                   </div>
                 </div>
+
                 <div className="syn-footer">
-                  <CheckCircle2 size={12}/> Reduces basin spatial uncertainty by {Math.min(100, selectedIds.length * 15)}%
+                  <CheckCircle2 size={12}/> Confidence: {summary?.confidence ?? '—'}%
                 </div>
               </div>
             )}
 
+            {/* Inspector panel */}
             {activeCandidate && (
               <div className="inspector-panel">
-                <div className="insp-header">INSPECTOR</div>
+                <div className="insp-header">STOP INSPECTOR</div>
                 <div className="insp-title-row">
-                  <div className="insp-title">CANDIDATE · {activeCandidate.id.replace('C', '')} <span style={{ color: isSelected ? '#10b981' : '#38bdf8' }}>●</span></div>
-                  <div className={`insp-badge ${activeCandidate.priority === 'CRITICAL' ? 'critical' : ''}`}>{activeCandidate.priority} VALUE</div>
+                  <div className="insp-title" style={{ fontSize: 16 }}>
+                    {activeCandidate.title}
+                  </div>
+                  <PriBadge p={activeCandidate.priority}/>
                 </div>
 
                 <div className="insp-why">
                   <div className="iw-title">WHY VISIT? <ShieldCheck size={12}/></div>
                   <div className="iw-desc">{activeCandidate.reason}</div>
-                  <div className="iw-sub">{activeCandidate.gap}</div>
+                  {activeCandidate.gap && <div className="iw-sub" style={{ marginTop: 4 }}>Evidence: {activeCandidate.gap}</div>}
                 </div>
 
                 <div className="insp-context">
                   <div className="ic-row">
-                    <div className="ic-label">SPATIAL CONTEXT:</div>
-                    <div className="ic-val">{activeCandidate.title}</div>
+                    <div className="ic-label">TYPE:</div>
+                    <div className="ic-val">{activeCandidate.type?.replace('_', ' ')}</div>
                   </div>
                   <div className="ic-row">
-                    <div className="ic-label">VALIDATION:</div>
-                    <div className="ic-val" style={{ color: activeCandidate.val === 'VALID' ? '#10b981' : '#f59e0b' }}>
-                      {activeCandidate.val === 'VALID' ? <Check size={12}/> : <AlertTriangle size={12}/>} {activeCandidate.val}
+                    <div className="ic-label">CONFIDENCE:</div>
+                    <div className="ic-val">{activeCandidate.confidence != null ? `${Math.round(activeCandidate.confidence * 100)}%` : '—'}</div>
+                  </div>
+                  <div className="ic-row">
+                    <div className="ic-label">COORDINATES:</div>
+                    <div className="ic-val" style={{ fontSize: 9, color: '#6b7280' }}>
+                      {activeCandidate.coords[1].toFixed(4)}, {activeCandidate.coords[0].toFixed(4)}
                     </div>
                   </div>
                 </div>
 
                 <div className="insp-value-decomp">
-                  <div className="ivd-title">INFORMATION VALUE DECOMPOSITION</div>
-                  
+                  <div className="ivd-title">EVIDENCE SCORE</div>
                   <div className="ivd-row">
-                    <div className="ivd-label">CHANGE SIGNAL</div>
-                    <div className="ivd-bars">
-                      {[...Array(5)].map((_, i) => <div key={i} className={`bar-unit ${i < 4 ? 'filled' : ''}`}></div>)}
-                    </div>
-                    <div className="ivd-val">HIGH</div>
+                    <div className="ivd-label">RAW SCORE</div>
+                    <ScoreBars score={activeCandidate.score}/>
+                    <div className="ivd-val">{Math.round(activeCandidate.score)}</div>
                   </div>
                   <div className="ivd-row">
-                    <div className="ivd-label">EVIDENCE GAP</div>
-                    <div className="ivd-bars">
-                      {[...Array(5)].map((_, i) => <div key={i} className={`bar-unit filled ${activeCandidate.priority==='CRITICAL'?'critical':''}`}></div>)}
-                    </div>
-                    <div className="ivd-val" style={{ color: activeCandidate.priority==='CRITICAL' ? '#10b981' : '#fff' }}>{activeCandidate.priority}</div>
+                    <div className="ivd-label">CONFIDENCE</div>
+                    <ScoreBars score={(activeCandidate.confidence || 0) * 100}/>
+                    <div className="ivd-val">{Math.round((activeCandidate.confidence || 0) * 100)}%</div>
                   </div>
                 </div>
 
                 <div className="insp-actions">
-                  <button className={`insp-btn ${isSelected ? 'remove' : ''}`} onClick={() => toggleCandidateSelection(activeCandidate.id)}>
-                    {isSelected ? 'REMOVE FROM PLAN' : 'ADD TO PLAN'}
+                  <button
+                    className={`insp-btn${isActiveSelected ? ' remove' : ''}`}
+                    onClick={() => toggleStop(activeCandidate.id)}
+                  >
+                    {isActiveSelected ? 'REMOVE FROM PLAN' : 'ADD TO PLAN'}
                   </button>
-                  <button className="insp-btn secondary" onClick={() => navigate('/compare')}><Layers size={14}/> VIEW SATELLITE CONTEXT</button>
+                  <button className="insp-btn secondary" onClick={() => navigate('/compare')}>
+                    <Layers size={13}/> VIEW SATELLITE CONTEXT
+                  </button>
                 </div>
               </div>
             )}
           </div>
 
-          {/* Bottom Strip */}
-          {(missionState !== 'CONFIG' && missionState !== 'GENERATING') && (
+          {/* ── Bottom dock ── */}
+          {missionState !== 'CONFIG' && missionState !== 'GENERATING' && (
             <div className="mission-bottom-strip">
-              <div className="mb-tabs">
-                <div className={`mb-tab ${activeTab === 'active_plan' ? 'active' : ''}`} onClick={() => setActiveTab('active_plan')}>
-                  <span style={{ color: '#38bdf8' }}>●</span> Active Plan ({selectedIds.length}/{budget} Stops)
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div className="mb-tabs">
+                  <div className={`mb-tab${activeTab === 'active_plan' ? ' active' : ''}`} onClick={() => setActiveTab('active_plan')}>
+                    <span style={{ color: '#38bdf8' }}>●</span> Active Plan ({selectedIds.length}/{budget} Stops)
+                  </div>
+                  <div className={`mb-tab${activeTab === 'candidate_pool' ? ' active' : ''}`} onClick={() => setActiveTab('candidate_pool')}>
+                    Candidate Pool ({candidates.length} Sites)
+                  </div>
+                  <div className={`mb-tab${activeTab === 'history' ? ' active' : ''}`} onClick={() => setActiveTab('history')}>
+                    <Clock size={11}/> Mission History
+                    {history.length > 0 && <span style={{ marginLeft: 4, background: 'rgba(56,189,248,0.2)', borderRadius: 8, padding: '1px 5px', fontSize: 9 }}>{history.length}</span>}
+                  </div>
                 </div>
-                <div className={`mb-tab ${activeTab === 'candidate_pool' ? 'active' : ''}`} onClick={() => setActiveTab('candidate_pool')}>
-                  Candidate Pool ({candidates.length} Sites)
-                </div>
-                <div className={`mb-tab ${activeTab === 'history' ? 'active' : ''}`} onClick={() => setActiveTab('history')}>
-                  <Clock size={12}/> Mission History (2)
-                </div>
-              </div>
-
-              {activeTab === 'candidate_pool' && missionState === 'CANDIDATES' && (
-                <div className="mb-summary-row" style={{ padding: '8px 0' }}>
-                  <span style={{ fontFamily: 'monospace', fontSize: 11, color: '#9ca3af' }}>{selectedIds.length} Candidates Selected. Ready to build optimal route.</span>
-                  <div className="mbs-actions">
-                    <button className="mbs-btn primary" onClick={handleBuildRoute} disabled={selectedIds.length === 0}>
-                      {missionState === 'ROUTING' ? 'ROUTING...' : 'BUILD ROUTE'}
+                {/* Actions */}
+                {(missionState === 'READY' || missionState === 'ACTIVE' || missionState === 'CANDIDATES') && (
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button
+                      className="mbs-btn"
+                      onClick={() => exportGPX(missionData, candidates, selectedIds)}
+                      disabled={selectedIds.length === 0}
+                    >
+                      <Download size={13}/> Export GPX
                     </button>
-                  </div>
-                </div>
-              )}
-
-              {(activeTab === 'active_plan' || missionState === 'READY' || missionState === 'ACTIVE') && (
-                <>
-                  <div className="mb-summary-row">
-                    <div className="mbs-stat">
-                      <span className="mbs-label">STOPS:</span>
-                      <span className="mbs-val">{selectedIds.length} <span className="mbs-sub">Planned</span></span>
-                    </div>
-                    <div className="mbs-stat" style={{ borderLeft: '1px solid rgba(255,255,255,0.1)', paddingLeft: 24 }}>
-                      <span className="mbs-label">EST. (DEMO)<br/>DISTANCE:</span>
-                      <span className="mbs-val highlight">{data.synthesis.distance.split(' ')[0]}<br/>{data.synthesis.distance.split(' ')[1]}</span>
-                    </div>
-                    <div className="mbs-stat" style={{ borderLeft: '1px solid rgba(255,255,255,0.1)', paddingLeft: 24 }}>
-                      <span className="mbs-label">FIELD<br/>TIME:</span>
-                      <span className="mbs-val highlight">{data.synthesis.duration} <span className="mbs-sub" style={{ color: '#10b981' }}>(Valid)</span></span>
-                    </div>
-
-                    <div className="mbs-actions">
-                      <button className="mbs-btn"><Download size={14}/> Export GPX</button>
-                      <button className="mbs-btn"><Save size={14}/> Save Draft</button>
-                      <button className="mbs-btn primary" onClick={() => setMissionState('ACTIVE')}>
-                        <Play size={14} fill="currentColor"/> START ACTIVE MISSION <ArrowRight size={14}/>
+                    <button
+                      className="mbs-btn"
+                      onClick={handleSave}
+                      disabled={savingState === 'saving'}
+                    >
+                      <Save size={13}/>
+                      {savingState === 'saving' ? 'Saving...' : savingState === 'saved' ? 'Saved ✓' : savingState === 'error' ? 'Error' : 'Save Draft'}
+                    </button>
+                    {missionState === 'CANDIDATES' && (
+                      <button className="mbs-btn primary" onClick={handleBuildRoute} disabled={selectedIds.length === 0}>
+                        <Route size={13}/> BUILD ROUTE
                       </button>
-                    </div>
-                  </div>
-
-                  <div className="ms-cards-row">
-                    {selectedIds.map((id, idx) => {
-                      const c = candidates.find(x => x.id === id);
-                      return (
-                        <div key={id} className={`msc-card ${activeCandidateId === id ? 'active' : ''}`} onClick={() => { setActiveCandidateId(id); map.current?.flyTo({center: c.coords, zoom: 15}); }}>
-                          <div className="msc-header">
-                            <span>STOP 0{idx + 1}</span>
-                            <span style={{ color: missionState === 'ACTIVE' && idx === 0 ? '#10b981' : '#38bdf8' }}>
-                              {missionState === 'ACTIVE' && idx === 0 ? 'ACTIVE' : 'PLANNED'}
-                            </span>
-                          </div>
-                          <div className="msc-title">{c.title}</div>
-                          <div className="msc-desc">{c.reason}</div>
-                        </div>
-                      )
-                    })}
-                    {selectedIds.length === 0 && (
-                      <div style={{ padding: '20px', fontFamily: 'monospace', color: '#9ca3af', fontSize: 11 }}>No stops selected yet.</div>
+                    )}
+                    {(missionState === 'READY') && (
+                      <button className="mbs-btn primary" onClick={handleStart}>
+                        <Play size={13} fill="currentColor"/> START ACTIVE MISSION
+                      </button>
                     )}
                   </div>
-                </>
+                )}
+              </div>
+
+              {/* Candidate pool tab */}
+              {activeTab === 'candidate_pool' && (
+                <div className="ms-cards-row">
+                  {candidates.length === 0 && (
+                    <div style={{ color: '#6b7280', fontFamily: 'monospace', fontSize: 11, padding: '8px 0' }}>No candidates generated yet.</div>
+                  )}
+                  {candidates.map((c, idx) => {
+                    const sel = selectedIds.includes(c.id);
+                    const act = activeStopId === c.id;
+                    return (
+                      <div
+                        key={c.id}
+                        className={`msc-card${act ? ' active' : ''}`}
+                        style={{ border: sel ? '1px solid rgba(16,185,129,0.4)' : undefined, background: sel ? 'rgba(16,185,129,0.06)' : undefined }}
+                        onClick={() => { setActiveStopId(c.id); map.current?.panTo({ lat: c.coords[1], lng: c.coords[0] }); map.current?.setZoom(15); }}
+                      >
+                        <div className="msc-header">
+                          <span>SITE {String(idx + 1).padStart(2, '0')}</span>
+                          <PriBadge p={c.priority}/>
+                        </div>
+                        <div className="msc-title">{c.title}</div>
+                        <div className="msc-desc">{c.gap || c.reason}</div>
+                        <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <ScoreBars score={c.score}/>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); toggleStop(c.id); }}
+                            style={{
+                              fontSize: 9, fontFamily: 'monospace', padding: '3px 8px', borderRadius: 3, cursor: 'pointer',
+                              border: sel ? '1px solid #ef4444' : '1px solid #10b981',
+                              color: sel ? '#ef4444' : '#10b981',
+                              background: 'transparent', transition: 'all 0.15s'
+                            }}
+                          >
+                            {sel ? 'REMOVE' : 'ADD'}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               )}
 
+              {/* Active plan tab */}
+              {activeTab === 'active_plan' && (
+                <div className="ms-cards-row">
+                  {selectedIds.length === 0 && (
+                    <div style={{ color: '#6b7280', fontFamily: 'monospace', fontSize: 11, padding: '8px 0' }}>No stops in plan. Select candidates from the pool.</div>
+                  )}
+                  {selectedIds.map((id, idx) => {
+                    const c = candidates.find(x => x.id === id);
+                    if (!c) return null;
+                    const act = activeStopId === id;
+                    const isFirst = missionState === 'ACTIVE' && idx === 0;
+                    return (
+                      <div
+                        key={id}
+                        className={`msc-card${act ? ' active' : ''}`}
+                        onClick={() => { setActiveStopId(id); map.current?.panTo({ lat: c.coords[1], lng: c.coords[0] }); map.current?.setZoom(15); }}
+                      >
+                        <div className="msc-header">
+                          <span>STOP {String(idx + 1).padStart(2, '0')}</span>
+                          <span style={{ color: isFirst ? '#10b981' : '#38bdf8', fontSize: 9, fontFamily: 'monospace', fontWeight: 700 }}>
+                            {isFirst ? 'ACTIVE' : 'PLANNED'}
+                          </span>
+                        </div>
+                        <div className="msc-title">{c.title}</div>
+                        <div className="msc-desc">{c.objective || c.reason}</div>
+                        {route?.fieldDurationMinutes && (
+                          <div style={{ marginTop: 6, fontSize: 9, fontFamily: 'monospace', color: '#6b7280' }}>
+                            ~{Math.round(route.fieldDurationMinutes / selectedIds.length)} min field time
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* History tab */}
               {activeTab === 'history' && (
-                <div className="mission-footer" style={{ borderTop: 'none', paddingTop: 0 }}>
-                  <div className="mf-list">
-                    <div className="mf-item">MISSION 014 · Subarnarekha South · 18 Aug 2024 · 5 Stops (4 Verified)</div>
-                    <div className="mf-item">MISSION 013 · Mayurakshi Catchment · 02 Jul 2024 · 4 Stops (Archived)</div>
-                  </div>
+                <div className="ms-cards-row">
+                  {history.length === 0 && (
+                    <div style={{ color: '#6b7280', fontFamily: 'monospace', fontSize: 11, padding: '8px 0' }}>No saved missions yet.</div>
+                  )}
+                  {history.slice(0, 10).map((m, i) => (
+                    <div key={m.id || i} className="msc-card">
+                      <div className="msc-header">
+                        <span>{m.id?.slice(0, 12)?.toUpperCase()}</span>
+                        <span style={{ color: '#6b7280' }}>{m.status}</span>
+                      </div>
+                      <div className="msc-title">{m.target?.name || 'Mission'}</div>
+                      <div className="msc-desc">{m.selectedStops?.length || 0} stops · {m.route?.driveDistance || '?'}</div>
+                      <div style={{ marginTop: 4, fontSize: 9, color: '#4b5563', fontFamily: 'monospace' }}>
+                        {m.timestamps?.generatedAt ? new Date(m.timestamps.generatedAt).toLocaleDateString() : ''}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>

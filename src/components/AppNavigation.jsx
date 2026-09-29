@@ -16,7 +16,7 @@ export default function AppNavigation() {
     { id: 'mission', icon: Navigation, label: 'Mission', path: '/mission' },
     { id: 'ask', icon: MessageSquare, label: 'Ask', path: '/ask' },
     { id: 'compare', icon: FileStack, label: 'Compare', path: '/compare' },
-    { id: 'monitor', icon: Activity, label: 'Monitor', path: '/monitor' },
+    { id: 'monitor', icon: Activity, label: 'Monitor', path: '/watch' },
     { id: 'evidence', icon: ShieldCheck, label: 'Evidence', path: '/evidence/ev-3841-b' },
   ];
 

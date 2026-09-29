@@ -212,7 +212,58 @@
 .msc-title { font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 600; color: var(--white); margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .msc-desc { font-family: 'Inter', sans-serif; font-size: 10px; color: var(--gray); margin-bottom: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.mission-footer { display: flex; justify-content: space-between; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.05); font-family: var(--font-mono); font-size: 9px; color: var(--gray); }
+.mission-footer { display: flex; justify-content: space-between; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.05); font-family: var(--font-mono, monospace); font-size: 9px; color: var(--gray, #9ca3af); }
 .mf-list { display: flex; gap: 24px; }
 .mf-item { display: flex; align-items: center; gap: 6px; }
 .mf-item::before { content: ''; display: block; width: 4px; height: 4px; background: #10b981; border-radius: 50%; }
+
+/* ── New additions ──────────────────────────────────────── */
+
+@keyframes ddFadeIn {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.6; transform: scale(0.9); }
+}
+
+/* Config strip scrollable on small screens */
+.mission-config-strip { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 8px; }
+@media (max-width: 1200px) {
+  .mission-config-strip { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 4px; }
+  .mission-config-strip::-webkit-scrollbar { height: 4px; }
+  .mission-config-strip::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+}
+
+/* Ensure dropdowns render above everything */
+.mission-ui-layer { z-index: 10; }
+.mission-top-section { z-index: 20; position: relative; }
+.config-box { position: relative; }
+
+/* Active-state focus ring on config-box */
+.config-box:focus-within {
+  outline: none;
+  border-color: rgba(56, 189, 248, 0.5);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.15);
+}
+
+/* Smooth synthesis panel width on small desktops */
+.synthesis-panel { max-width: 360px; }
+@media (max-width: 1400px) { .synthesis-panel { width: 320px; } }
+
+/* Inspector panel */
+.inspector-panel { max-width: 360px; }
+@media (max-width: 1400px) { .inspector-panel { width: 300px; } }
+
+/* Bottom strip max-height to avoid covering too much map */
+.mission-bottom-strip { max-height: 42vh; overflow: hidden; }
+.ms-cards-row { max-height: 200px; }
+
+/* GPX button disabled state */
+.mbs-btn:disabled { opacity: 0.4; cursor: not-allowed; pointer-events: auto; }
+
+/* Gen overlay pulse ring */
+.gen-stage-ring { animation: pulse 1.2s ease-in-out infinite; }
+

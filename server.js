@@ -621,6 +621,29 @@ app.post('/api/field/upload', fieldUpload.single('photo'), async (req, res) => {
 
     await insertRow('field_observations', obsId, obs);
 
+    // If EXIF GPS found, do reverse geocode and watershed background tasks
+    if (lat != null && lon != null) {
+      import('./server/fieldService.js').then(({ reverseGeocode, resolveWatershedForObservation }) => {
+        resolveWatershedForObservation(lat, lon).then(ws => {
+           if (ws && ws.dataStatus === 'AVAILABLE') {
+             getRow('field_observations', obsId).then(o => {
+               if (o) updateRow('field_observations', obsId, { ...o, watershedId: ws.id, watershedName: ws.name, updatedAt: new Date().toISOString() });
+             });
+           }
+        });
+        reverseGeocode(lat, lon).then(geo => {
+           if (geo) {
+             getRow('field_observations', obsId).then(o => {
+               if (o && o.location) {
+                 const newLoc = { ...o.location, reverseGeocode: geo };
+                 updateRow('field_observations', obsId, { ...o, location: newLoc, updatedAt: new Date().toISOString() });
+               }
+             });
+           }
+        });
+      });
+    }
+
     fieldOk(res, {
       observationId: obsId,
       photoPreviewUrl: `/api/field/${obsId}/photo`,
@@ -713,7 +736,7 @@ app.post('/api/field/:id/analyze', async (req, res) => {
                 updated.watershedName = ws.name;
               }
             } catch (e) { console.error('Watershed resolution failed:', e.message); }
-            
+
             // Auto-fetch satellite context for demo flow
             try {
               const satCtx = await getSatelliteContextForLocation(landmark.latitude, landmark.longitude);
@@ -723,7 +746,15 @@ app.post('/api/field/:id/analyze', async (req, res) => {
                 updated.satelliteContext = { status: 'UNAVAILABLE', error: satCtx?.error || 'Unknown error' };
               }
             } catch (e) { console.error('Satellite context failed:', e.message); }
+
+            // Reverse Geocode
+            try {
+              const { reverseGeocode } = await import('./server/fieldService.js');
+              const rev = await reverseGeocode(landmark.latitude, landmark.longitude);
+              if (rev) updated.location.reverseGeocode = rev;
+            } catch (e) { console.error('Reverse geocode failed:', e.message); }
          }
+
       }
     }
 
@@ -771,6 +802,18 @@ app.post('/api/field/:id/location', async (req, res) => {
       updatedAt: new Date().toISOString()
     };
     await updateRow('field_observations', obs.id, updated);
+
+    // Reverse geocode
+    try {
+      const { reverseGeocode } = await import('./server/fieldService.js');
+      const geo = await reverseGeocode(parseFloat(lat), parseFloat(lon));
+      if (geo) {
+        updated.location.reverseGeocode = geo;
+        await updateRow('field_observations', obs.id, updated);
+      }
+    } catch (e) {
+      console.error('Reverse geocode failed:', e.message);
+    }
 
     // Re-resolve watershed in background (non-blocking)
     resolveWatershedForObservation(parseFloat(lat), parseFloat(lon)).then(ws => {
@@ -1120,6 +1163,111 @@ app.post('/api/compare', async (req, res) => {
     res.json(result);
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+// =========================================================
+// MISSION API
+// =========================================================
+
+app.get('/api/mission/watersheds/search', async (req, res) => {
+  try {
+    const { searchMissionWatersheds } = await import('./server/missionService.js');
+    const results = await searchMissionWatersheds(req.query.q);
+    res.json(results);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/mission/origins/search', async (req, res) => {
+  try {
+    const { searchOrigins } = await import('./server/missionService.js');
+    const results = await searchOrigins(req.query.q);
+    res.json(results);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/mission/origins/resolve', async (req, res) => {
+  try {
+    const { resolveOriginDetails } = await import('./server/missionService.js');
+    const result = await resolveOriginDetails(req.query.placeId);
+    if (!result) return res.status(404).json({ error: 'Could not resolve place' });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.post('/api/mission/generate', async (req, res) => {
+  try {
+    const { targetId, targetName, targetLat, targetLon, origin, constraints } = req.body;
+    const { resolveOriginDetails, generateMissionPlan } = await import('./server/missionService.js');
+    
+    const targetWatershed = {
+      id: targetId,
+      name: targetName,
+      lat: targetLat,
+      lon: targetLon
+    };
+
+    let originGeo = null;
+    if (origin.type === 'SEARCH_RESULT' && origin.id) {
+      originGeo = await resolveOriginDetails(origin.id);
+    } else {
+      originGeo = origin;
+    }
+
+    if (!originGeo || !originGeo.lat || !originGeo.lng) {
+      return res.status(400).json({ error: 'Origin coordinates could not be resolved.' });
+    }
+
+    const mission = await generateMissionPlan(targetWatershed, originGeo, constraints);
+    
+    // Save generated mission
+    await insertRow('missions', mission.id, mission);
+    
+    res.json({ mission });
+  } catch (err) {
+    console.error('[Mission] generate error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/mission/preview', async (req, res) => {
+  try {
+    const { targetId, targetName, targetLat, targetLon, origin, constraints } = req.body;
+    const { resolveOriginDetails, generateMissionPlan } = await import('./server/missionService.js');
+    
+    const targetWatershed = {
+      id: targetId,
+      name: targetName,
+      lat: targetLat,
+      lon: targetLon
+    };
+
+    let originGeo = null;
+    if (origin.type === 'SEARCH_RESULT' && origin.id) {
+      originGeo = await resolveOriginDetails(origin.id);
+    } else {
+      originGeo = origin;
+    }
+
+    if (!originGeo || !originGeo.lat || !originGeo.lng) {
+      return res.status(400).json({ error: 'Origin coordinates could not be resolved.' });
+    }
+
+    const mission = await generateMissionPlan(targetWatershed, originGeo, constraints);
+    // Don't save it
+    mission.status = 'DRAFT';
+    
+    res.json({ mission });
+  } catch (err) {
+    console.error('[Mission] preview error:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 

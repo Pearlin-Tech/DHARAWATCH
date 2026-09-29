@@ -244,6 +244,95 @@ export async function getWatershedContext(watershedId, geometry) {
   return result;
 }
 
+// ─── Field Satellite Context ────────────────────────────────────────
+export async function getFieldSatelliteContext(lat, lon) {
+  if (!_eeReady) {
+    return { status: 'UNAVAILABLE', error: 'Earth Engine not initialized' };
+  }
+
+  try {
+    const point = ee.Geometry.Point([lon, lat]);
+    // 500m buffer for spectral analysis around the point
+    const aoi = point.buffer(500); 
+
+    const now = new Date();
+    const endDate = now.toISOString().split('T')[0];
+    const startDate = new Date(now - 30 * 24 * 3600 * 1000).toISOString().split('T')[0];
+
+    const s2Coll = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+      .filterBounds(point)
+      .filterDate(startDate, endDate)
+      .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 30));
+
+    // Get the most recent single scene for metadata
+    const latestScene = s2Coll.sort('system:time_start', false).first();
+    
+    // For indices, we use the median composite of the collection to avoid clouds
+    const composite = s2Coll.map(maskS2Clouds).median().clip(aoi);
+
+    const ndvi = composite.normalizedDifference(['B8', 'B4']).rename('ndvi');
+    const ndwi = composite.normalizedDifference(['B3', 'B8']).rename('ndwi');
+    const ndmi = composite.normalizedDifference(['B8', 'B11']).rename('ndmi');
+    const ndbi = composite.normalizedDifference(['B11', 'B8']).rename('ndbi');
+
+    const stats = ee.Image.cat([ndvi, ndwi, ndmi, ndbi]).reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: aoi,
+      scale: 10,
+      maxPixels: 1e8,
+      bestEffort: true
+    });
+
+    // Evaluate metadata and stats in parallel
+    const [sceneInfo, vals] = await Promise.all([
+      new Promise((resolve, reject) => {
+        latestScene.evaluate((result, err) => {
+          if (err || !result) resolve(null);
+          else resolve(result);
+        });
+      }),
+      new Promise((resolve, reject) => {
+        stats.evaluate((result, err) => {
+          if (err) resolve({});
+          else resolve(result || {});
+        });
+      })
+    ]);
+
+    if (!sceneInfo) {
+      return { status: 'UNAVAILABLE', error: 'No cloud-free Sentinel-2 imagery found in the last 30 days.' };
+    }
+
+    const props = sceneInfo.properties || {};
+    
+    const context = {
+      provider: 'Copernicus / Google Earth Engine',
+      satellite: 'Sentinel-2',
+      sensor: 'MSI',
+      processingLevel: 'SR Harmonized',
+      acquisitionDate: props['system:time_start'] ? new Date(props['system:time_start']).toISOString() : endDate,
+      sceneId: sceneInfo.id,
+      cloudCover: props['CLOUDY_PIXEL_PERCENTAGE'] != null ? Math.round(props['CLOUDY_PIXEL_PERCENTAGE'] * 100) / 100 : null,
+      resolution: '10m',
+      bands: ['B2', 'B3', 'B4', 'B8', 'B11', 'B12']
+    };
+
+    const spectral = {
+      ndvi: vals['ndvi'] != null ? Math.round(vals['ndvi'] * 100) / 100 : null,
+      ndwi: vals['ndwi'] != null ? Math.round(vals['ndwi'] * 100) / 100 : null,
+      ndmi: vals['ndmi'] != null ? Math.round(vals['ndmi'] * 100) / 100 : null,
+      ndbi: vals['ndbi'] != null ? Math.round(vals['ndbi'] * 100) / 100 : null,
+      confidence: 0.95
+    };
+
+    return { status: 'AVAILABLE', context, spectral };
+
+  } catch (err) {
+    console.error('[WS] getFieldSatelliteContext error:', err.message);
+    return { status: 'UNAVAILABLE', error: err.message };
+  }
+}
+
 // ─── Fingerprint Summary ──────────────────────────────────────────
 export async function getFingerprintSummary(watershedId, geometry) {
   if (!_eeReady || !geometry) {
