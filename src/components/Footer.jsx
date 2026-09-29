@@ -7,11 +7,10 @@ export default function Footer() {
       <div className="footer-container">
         <div className="footer-top">
           <div className="footer-brand">
-            <span className="brand-sat">DRISHTIWATCH</span>
-            <span className="brand-ai">AI</span>
+            <span className="brand-sat">DHARAWATCH</span>
             <p className="footer-tagline text-xs font-mono mt-4 text-gray">
-              Next-generation natural language satellite analysis.<br/>
-              Powered by advanced earth observation models.
+              AI-powered watershed intelligence.<br/>
+              Satellite analysis, field evidence and temporal understanding.
             </p>
           </div>
           
@@ -40,7 +39,7 @@ export default function Footer() {
         
         <div className="footer-bottom">
           <div className="text-xs text-gray">
-            &copy; {new Date().getFullYear()} DrishtiWatch AI. All rights reserved.
+            &copy; {new Date().getFullYear()} DHARAWATCH. All rights reserved.
           </div>
           <div className="footer-legal">
             <a href="#" className="text-xs text-gray">Privacy Policy</a>

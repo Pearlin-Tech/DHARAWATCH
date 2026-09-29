@@ -24,8 +24,8 @@ export default function ImageToAnswer() {
     <section className="ita-section" ref={containerRef} id="ask">
       <div className="ita-header">
         <div className="text-xs font-mono text-blue-accent mb-4">SENSOR TO SIGNAL · SOURCE · SENTINEL-2</div>
-        <h2 className="ita-title">FROM IMAGE<br/>TO ANSWER.</h2>
-        <p className="ita-subtitle">Shift from complex manual GIS software workflows to natural conversational understanding powered by AI-native earth observation models.</p>
+        <h2 className="ita-title">FROM SATELLITE<br/>TO WATERSHED INSIGHT.</h2>
+        <p className="ita-subtitle">Move from raw earth observation data to measurable watershed context, change and evidence.</p>
       </div>
 
       <motion.div 

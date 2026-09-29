@@ -1,0 +1,62 @@
+.watershed-page-container {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+  background-color: var(--bg-black, #000);
+}
+
+.watershed-main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+
+.watershed-top-bar {
+  padding: 1rem 2rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(10, 12, 16, 0.85);
+  backdrop-filter: blur(12px);
+}
+
+.watershed-map-area {
+  flex: 1;
+  position: relative;
+}
+
+.watershed-panels-overlay {
+  z-index: 20;
+}
+
+/* FINGERPRINT SPECIFICS */
+.fp-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+.fp-row:last-child {
+  margin-bottom: 0;
+}
+.fp-label {
+  font-size: 0.75rem;
+  font-family: monospace;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.dot-blue { background-color: var(--accent-blue, #3b82f6); box-shadow: 0 0 8px rgba(59, 130, 246, 0.5); }
+.dot-green { background-color: var(--success-mint, #10b981); box-shadow: 0 0 8px rgba(16, 185, 129, 0.5); }
+.dot-orange { background-color: var(--warning, #f59e0b); box-shadow: 0 0 8px rgba(245, 158, 11, 0.5); }
+.dot-gray { background-color: #6b7280; }
+.dot-cyan { background-color: #06b6d4; }

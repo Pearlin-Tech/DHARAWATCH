@@ -1,0 +1,60 @@
+.ws-panel {
+  border-radius: 8px;
+  background: rgba(10, 12, 16, 0.85);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+  box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+  display: flex;
+  flex-direction: column;
+}
+
+.ws-panel-header {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(0,0,0,0.2);
+  user-select: none;
+}
+
+.ws-panel-header.drag-handle {
+  cursor: grab;
+}
+
+.ws-panel-header.drag-handle:active {
+  cursor: grabbing;
+}
+
+.panel-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.2s;
+}
+
+.ws-panel.minimized {
+  height: auto !important;
+}
+
+.ws-panel.minimized .ws-panel-header {
+  border-bottom: none;
+}
+
+.ws-panel-content {
+  padding: 1rem;
+}
+
+.badge {
+  background: rgba(245, 158, 11, 0.2); /* Warning color */
+  color: var(--warning, #f59e0b);
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: bold;
+}

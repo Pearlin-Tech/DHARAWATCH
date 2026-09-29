@@ -334,7 +334,7 @@ export default function Evidence() {
         {/* FOOTER ACTIONS */}
         <div className="evidence-footer">
           <div className="flex items-center gap-2 text-[10px] font-mono text-gray-dim">
-            <Lock size={12} /> Cryptographically signed with ED25519 - DRISHTIWATCH Defense Node #89
+            <Lock size={12} /> Cryptographically signed with ED25519 - DHARAWATCH Defense Node #89
           </div>
           <div className="text-[10px] font-mono text-accent-blue bg-accent-blue/10 px-2 py-1 rounded">
             {evidence.hash}

@@ -2,6 +2,7 @@ import React from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import Home from './pages/Home';
 import Explore from './pages/Explore/Explore';
+import Watershed from './pages/Watershed/Watershed';
 import Ask from './pages/Ask/Ask';
 import Detect from './pages/Detect/Detect';
 import Compare from './pages/Compare/Compare';
@@ -22,6 +23,7 @@ function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/explore" element={<Explore />} />
+        <Route path="/watershed" element={<Watershed />} />
         <Route path="/ask" element={<Ask />} />
         <Route path="/detect" element={<Detect />} />
         <Route path="/compare" element={<Compare />} />
