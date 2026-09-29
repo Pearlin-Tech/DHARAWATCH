@@ -31,21 +31,21 @@ export default function BuiltForAccuracy() {
           <motion.div className="pipeline-step" style={{ opacity: step1Opacity }}>
             <div className="step-number">01</div>
             <h3 className="step-title">ASK.</h3>
-            <p className="step-desc">Formulate queries in natural language. Parameters are parsed, constraints specific to API and routing logic are synthetically aligned.</p>
+            <p className="step-desc">Describe the watershed question in natural language.</p>
             <div className="step-meta font-mono text-xs">NLP · SEMANTIC PARSING · QUERY</div>
           </motion.div>
 
           <motion.div className="pipeline-step" style={{ opacity: step2Opacity }}>
             <div className="step-number">02</div>
             <h3 className="step-title">ANALYSE.</h3>
-            <p className="step-desc">Accurate surface, perimeter, and multi-temporal metrics calculated directly on sensor bits, polygons, raster multi-spectral data layers.</p>
+            <p className="step-desc">Combine satellite observations, spatial boundaries and temporal evidence to measure what changed.</p>
             <div className="step-meta font-mono text-xs">RAW ASSET COMPUTE · PIPELINE</div>
           </motion.div>
 
           <motion.div className="pipeline-step" style={{ opacity: step3Opacity }}>
             <div className="step-number">03</div>
             <h3 className="step-title">VERIFY.</h3>
-            <p className="step-desc">Every extracted metric is verified against original sensor run passes with full geo-hash, data provenance and audit trail variants attached.</p>
+            <p className="step-desc">Trace results back to imagery, dates, methods and supporting evidence.</p>
             <div className="step-meta font-mono text-xs">DATA PROVENANCE · QA · LINEAGE</div>
           </motion.div>
         </div>

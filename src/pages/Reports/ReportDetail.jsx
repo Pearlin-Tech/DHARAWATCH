@@ -234,7 +234,7 @@ export default function ReportDetail() {
               </div>
               <div className="flex justify-between text-[10px] font-mono">
                 <span className="text-gray">Authorizing Unit:</span>
-                <span className="text-white">DRISHTIWATCH-SYS-ALPHA</span>
+                <span className="text-white">DHARAWATCH-SYS-ALPHA</span>
               </div>
               <div className="flex justify-between text-[10px] font-mono mt-1">
                 <span className="text-gray">Security Compartment:</span>
@@ -255,7 +255,7 @@ export default function ReportDetail() {
         {/* Footer */}
         <div className="flex justify-between items-center border-t border-white/10 pt-6 pb-12">
           <div>
-            <div className="text-[10px] font-mono text-gray-dim uppercase mb-1">DRISHTIWATCH AUTOMATED EARTH OBSERVATION SYSTEM</div>
+            <div className="text-[10px] font-mono text-gray-dim uppercase mb-1">DHARAWATCH AUTOMATED EARTH OBSERVATION SYSTEM</div>
             <div className="text-xs text-gray">Generated for Department of Environmental Spatial Surveillance - Reference Mission EV-8841-B</div>
           </div>
           <div className="text-right">

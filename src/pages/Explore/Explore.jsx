@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { 
   Search, Calendar, Layers, Map as MapIcon, ChevronRight, 
   MessageSquare, Plus, Minus, Crosshair, Sparkles, Navigation,
-  Menu, Eye, Calendar as CalendarIcon, FileStack, Settings, Activity, Clock, MapPin, X,
+  Menu, Eye, Calendar as CalendarIcon, FileStack, Settings, Activity, Clock, MapPin, X, ShieldCheck,
   GripHorizontal, Maximize2, Minimize2, Paperclip, ArrowUp, Compass, Cpu, CheckCircle2, AlertTriangle, Info
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -584,7 +584,7 @@ export default function Explore() {
                 exit={{ opacity: 0, x: -10, width: 0 }}
                 style={{ overflow: 'hidden', whiteSpace: 'nowrap', marginTop: '2px' }}
               >
-                <span style={{ fontFamily: 'monospace', fontWeight: 900, color: 'var(--accent-blue)', letterSpacing: '2px', fontSize: '14px' }}>DRISHTI</span>
+                <span style={{ fontFamily: 'monospace', fontWeight: 900, color: 'var(--accent-blue)', letterSpacing: '2px', fontSize: '14px' }}>DHARA</span>
                 <span style={{ fontFamily: 'monospace', fontWeight: 300, color: '#9ca3af', letterSpacing: '6.5px', fontSize: '9px', marginTop: '2px', paddingLeft: '1px' }}>WATCH</span>
               </motion.div>
             )}
@@ -593,12 +593,13 @@ export default function Explore() {
         
         <div className="nav-rail-links">
           <NavItem icon={<MapIcon size={20} />} label="Explore" path="/explore" active expanded={isNavExpanded} />
+          <NavItem icon={<Layers size={20} />} label="Watershed" path="/watershed" expanded={isNavExpanded} />
+          <NavItem icon={<MapPin size={20} />} label="Field" path="/field" expanded={isNavExpanded} />
+          <NavItem icon={<Navigation size={20} />} label="Mission" path="/mission" expanded={isNavExpanded} />
           <NavItem icon={<MessageSquare size={20} />} label="Ask" path="/ask" expanded={isNavExpanded} />
-          <NavItem icon={<Activity size={20} />} label="Detect" path="/detect" expanded={isNavExpanded} />
-          <NavItem icon={<Layers size={20} />} label="Compare" path="/compare" expanded={isNavExpanded} />
-          <NavItem icon={<Navigation size={20} />} label="Measure" path="/measure" expanded={isNavExpanded} />
-          <NavItem icon={<Eye size={20} />} label="Watch" path="/watch" expanded={isNavExpanded} />
-          <NavItem icon={<Clock size={20} />} label="Timeline" path="/timeline" expanded={isNavExpanded} />
+          <NavItem icon={<FileStack size={20} />} label="Compare" path="/compare" expanded={isNavExpanded} />
+          <NavItem icon={<Activity size={20} />} label="Monitor" path="/monitor" expanded={isNavExpanded} />
+          <NavItem icon={<ShieldCheck size={20} />} label="Evidence" path="/evidence/ev-3841-b" expanded={isNavExpanded} />
         </div>
 
         <div className="nav-rail-footer">
@@ -738,7 +739,7 @@ export default function Explore() {
             onClick={() => setIsMinimized(false)}
           >
             <Sparkles size={16} className="text-accent-blue animate-pulse" />
-            <span className="font-bold">DRISHTIWATCH AI</span>
+            <span className="font-bold">DHARAWATCH</span>
             {copilotContext?.selectedLocation && (
               <span className="text-[10px] text-accent-blue/80 bg-black/40 px-2 py-0.5 rounded-full">
                 📍 {copilotContext.selectedLocation.lat.toFixed(2)}°, {(copilotContext.selectedLocation.lon || copilotContext.selectedLocation.lng).toFixed(2)}°
@@ -772,7 +773,7 @@ export default function Explore() {
               <div className="flex items-center gap-2">
                 <GripHorizontal size={16} className="text-gray-dim hover:text-white transition-colors mr-1" />
                 <Sparkles size={16} className="text-accent-blue" />
-                <span className="font-mono text-xs font-bold tracking-wider text-white">DRISHTIWATCH AI</span>
+                <span className="font-mono text-xs font-bold tracking-wider text-white">DHARAWATCH</span>
               </div>
 
               <div className="flex items-center gap-2" onPointerDown={(e) => e.stopPropagation()}>
@@ -1001,13 +1002,13 @@ export default function Explore() {
       {/* FLOATING AI BUTTON */}
       <button 
         className="floating-ai-btn btn-primary"
-        aria-label="Ask DrishtiWatch about this location"
+        aria-label="Ask Dharawatch about this location"
         onClick={(e) => {
           e.stopPropagation();
           openCopilot({ entryPoint: 'floating_map_button', selectedLocation: markerCoords });
         }}
       >
-        <Sparkles size={16} className="mr-2" /> ASK DRISHTIWATCH
+        <Sparkles size={16} className="mr-2" /> ASK DHARAWATCH
       </button>
 
       {/* ZOOM & LOCATION CONTROLS */}

@@ -2,11 +2,14 @@ import React from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import Home from './pages/Home';
 import Explore from './pages/Explore/Explore';
+import Watershed from './pages/Watershed/Watershed';
 import Ask from './pages/Ask/Ask';
 import Detect from './pages/Detect/Detect';
 import Compare from './pages/Compare/Compare';
 import Measure from './pages/Measure/Measure';
 import Area from './pages/Area/Area';
+import Field from './pages/Field/Field';
+import Mission from './pages/Mission/Mission';
 import WatchList from './pages/Watch/WatchList';
 import WatchNew from './pages/Watch/WatchNew';
 import WatchDetail from './pages/Watch/WatchDetail';
@@ -22,6 +25,9 @@ function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/explore" element={<Explore />} />
+        <Route path="/watershed" element={<Watershed />} />
+        <Route path="/field" element={<Field />} />
+        <Route path="/mission" element={<Mission />} />
         <Route path="/ask" element={<Ask />} />
         <Route path="/detect" element={<Detect />} />
         <Route path="/compare" element={<Compare />} />

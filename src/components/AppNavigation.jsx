@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Map as MapIcon, MessageSquare, Crosshair, FileStack, Settings, Activity, Clock, Eye, ShieldCheck } from 'lucide-react';
+import { Search, Map as MapIcon, MessageSquare, Crosshair, FileStack, Settings, Activity, Clock, Eye, ShieldCheck, Layers, MapPin, Navigation } from 'lucide-react';
 import './AppNavigation.css';
 
 export default function AppNavigation() {
@@ -11,15 +11,13 @@ export default function AppNavigation() {
 
   const navItems = [
     { id: 'explore', icon: MapIcon, label: 'Explore', path: '/explore' },
+    { id: 'watershed', icon: Layers, label: 'Watershed', path: '/watershed' },
+    { id: 'field', icon: MapPin, label: 'Field', path: '/field' },
+    { id: 'mission', icon: Navigation, label: 'Mission', path: '/mission' },
     { id: 'ask', icon: MessageSquare, label: 'Ask', path: '/ask' },
-    { id: 'detect', icon: Crosshair, label: 'Detect', path: '/detect' },
     { id: 'compare', icon: FileStack, label: 'Compare', path: '/compare' },
-    { id: 'measure', icon: Activity, label: 'Measure', path: '/measure' },
-    { id: 'area', icon: Search, label: 'Area', path: '/area' },
-    { id: 'watch', icon: Eye, label: 'Watch', path: '/watch' },
-    { id: 'timeline', icon: Clock, label: 'Timeline', path: '/timeline' },
-    { id: 'evidence', icon: ShieldCheck, label: 'Evidence Dossier', path: '/evidence/ev-3841-b' },
-    { id: 'reports', icon: FileStack, label: 'Reports', path: '/reports' },
+    { id: 'monitor', icon: Activity, label: 'Monitor', path: '/monitor' },
+    { id: 'evidence', icon: ShieldCheck, label: 'Evidence', path: '/evidence/ev-3841-b' },
   ];
 
   return (
@@ -47,7 +45,7 @@ export default function AppNavigation() {
               exit={{ opacity: 0, x: -10, width: 0 }}
               style={{ overflow: 'hidden', whiteSpace: 'nowrap', marginTop: '2px' }}
             >
-              <span style={{ fontFamily: 'monospace', fontWeight: 900, color: 'var(--accent-blue)', letterSpacing: '2px', fontSize: '14px' }}>DRISHTI</span>
+              <span style={{ fontFamily: 'monospace', fontWeight: 900, color: 'var(--accent-blue)', letterSpacing: '2px', fontSize: '14px' }}>DHARA</span>
               <span style={{ fontFamily: 'monospace', fontWeight: 300, color: '#9ca3af', letterSpacing: '6.5px', fontSize: '9px', marginTop: '2px', paddingLeft: '1px' }}>WATCH</span>
             </motion.div>
           )}

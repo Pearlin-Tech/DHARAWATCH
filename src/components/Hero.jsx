@@ -16,7 +16,7 @@ export default function Hero() {
           transition={{ duration: 0.6 }}
         >
           <span className="indicator"></span>
-          DRISHTIWATCH AI · ACTIVE MONITORING GRID
+          DHARAWATCH · WATERSHED INTELLIGENCE
         </motion.div>
         
         <motion.h1 
@@ -25,8 +25,8 @@ export default function Hero() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6, delay: 0.1 }}
         >
-          UNDERSTAND EARTH.<br />
-          WITH INTELLIGENCE.
+          UNDERSTAND<br />
+          THE WATERSHED.
         </motion.h1>
         
         <motion.p 
@@ -35,7 +35,7 @@ export default function Hero() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6, delay: 0.2 }}
         >
-          Ask questions. Analyse satellite imagery. Measure changes. See the evidence.
+          AI-powered satellite intelligence for monitoring water, vegetation, land and watershed change — connected to field evidence.
         </motion.p>
         
         <motion.div 
@@ -44,11 +44,11 @@ export default function Hero() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6, delay: 0.3 }}
         >
-          <button className="btn-primary" onClick={() => navigate('/explore')}>
-            START EXPLORING <ArrowRight size={16} className="ml-2" />
+          <button className="btn-primary" onClick={() => navigate('/watershed')}>
+            EXPLORE WATERSHED <ArrowRight size={16} className="ml-2" />
           </button>
           <button className="btn-secondary" onClick={() => navigate('/ask')}>
-            ASK DRISHTIWATCH <Sparkles size={16} className="ml-2" />
+            ASK DHARAWATCH <Sparkles size={16} className="ml-2" />
           </button>
         </motion.div>
       </div>
@@ -60,7 +60,7 @@ export default function Hero() {
         transition={{ duration: 1, delay: 0.4, ease: "easeOut" }}
       >
         <div className="satellite-image-wrapper">
-          <img src="/hero-map.jpg" alt="Satellite imagery of river delta" className="satellite-image" />
+          <img src="/watershed-hero.jpg" alt="Satellite imagery of river delta" className="satellite-image" />
           
           <div className="image-metadata glass-panel font-mono text-xs">
             <div className="meta-item">

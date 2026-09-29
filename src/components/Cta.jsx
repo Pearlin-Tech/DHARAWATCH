@@ -15,19 +15,19 @@ export default function Cta() {
         style={{ maxWidth: '600px', margin: '0 auto' }}
       >
         <h2 style={{ fontSize: 'clamp(2.5rem, 5vw, 4rem)', textTransform: 'uppercase', marginBottom: 'var(--spacing-6)', lineHeight: 1.1 }}>
-          START SEEING<br/>THE EVIDENCE.
+          START UNDERSTANDING<br/>YOUR WATERSHED.
         </h2>
         
         <p style={{ color: 'var(--text-secondary)', fontSize: '1.25rem', marginBottom: 'var(--spacing-12)' }}>
-          Turn satellite imagery into answers you can understand. Query millions of square kilometers in seconds.
+          Explore satellite observations, compare change, connect field evidence and plan what to investigate next.
         </p>
         
         <div style={{ display: 'flex', gap: 'var(--spacing-4)', justifyContent: 'center', flexWrap: 'wrap' }}>
-          <button className="btn-primary" onClick={() => navigate('/explore')}>
-            START EXPLORING <ArrowRight size={16} className="ml-2" />
+          <button className="btn-primary" onClick={() => navigate('/watershed')}>
+            EXPLORE WATERSHED <ArrowRight size={16} className="ml-2" />
           </button>
-          <button className="btn-secondary">
-            REQUEST ENTERPRISE DEMO <Sparkles size={16} className="ml-2" />
+          <button className="btn-secondary" onClick={() => navigate('/ask')}>
+            ASK DHARAWATCH <Sparkles size={16} className="ml-2" />
           </button>
         </div>
       </motion.div>

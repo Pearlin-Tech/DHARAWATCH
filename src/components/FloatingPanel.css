@@ -1,0 +1,114 @@
+.floating-panel-container {
+  background: var(--glass-bg, rgba(15, 23, 42, 0.75));
+  backdrop-filter: var(--glass-blur, blur(16px));
+  -webkit-backdrop-filter: var(--glass-blur, blur(16px));
+  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.12));
+  border-radius: 12px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  color: var(--white, #fff);
+  max-height: calc(100vh - 120px);
+  min-width: 250px;
+  min-height: 150px;
+  transition: box-shadow 0.3s ease;
+}
+
+.floating-panel-container:hover {
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.floating-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: rgba(0, 0, 0, 0.4);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  user-select: none;
+}
+
+.floating-panel-header:active {
+  cursor: grabbing !important;
+}
+
+.floating-panel-title {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-primary, #ffffff);
+}
+
+.floating-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.panel-action-btn {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.panel-action-btn:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.panel-action-btn.active {
+  color: var(--accent-blue, #38bdf8);
+}
+
+.floating-panel-body {
+  padding: 16px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.floating-panel-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.floating-panel-body::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.2);
+  border-radius: 4px;
+}
+
+/* Custom Resize Handle */
+.floating-panel-resizer {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  z-index: 20;
+}
+
+.floating-panel-resizer::after {
+  content: '';
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid rgba(255, 255, 255, 0.3);
+  border-bottom: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 1px;
+  transition: border-color 0.2s ease;
+}
+
+.floating-panel-resizer:hover::after {
+  border-color: var(--accent-blue, #38bdf8);
+}

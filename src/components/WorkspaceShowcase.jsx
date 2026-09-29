@@ -6,7 +6,7 @@ import './WorkspaceShowcase.css';
 export default function WorkspaceShowcase() {
   const [sliderPosition, setSliderPosition] = useState(50);
   const containerRef = useRef(null);
-  
+
   const { scrollYProgress } = useScroll({
     target: containerRef,
     offset: ["start end", "center center"]
@@ -23,7 +23,7 @@ export default function WorkspaceShowcase() {
     <section className="workspace-section" ref={containerRef}>
       <div className="workspace-header mb-12">
         <div className="text-xs font-mono text-blue-accent mb-4">WORKSPACE · PREVIEW</div>
-        <h2 className="accuracy-title">THE DRISHTIWATCH WORKSPACE</h2>
+        <h2 className="accuracy-title">THE DHARAWATCH WORKSPACE</h2>
         <p className="step-desc mt-4">A complete environment designed for analysts, researchers and operators to manage and generate high-fidelity spatial intelligence.</p>
       </div>
 
@@ -32,7 +32,7 @@ export default function WorkspaceShowcase() {
         style={{ scale, opacity }}
       >
         <div className="workspace-topbar">
-          <div className="ws-brand">DRISHTIWATCH <span className="text-blue-accent text-xs">AI</span></div>
+          <div className="ws-brand">DHARAWATCH</div>
           <div className="ws-search glass-panel">
             <Search size={16} />
             <span>Ahmedabad, India</span>
@@ -57,21 +57,21 @@ export default function WorkspaceShowcase() {
                   <img src="/map-before.jpg" alt="Before" className="map-image" />
                   <div className="map-label font-mono">Time: OCT 2021</div>
                 </div>
-                
+
                 <div className="map-view after-map" style={{ width: `${100 - sliderPosition}%`, right: 0 }}>
                   <img src="/map-after.jpg" alt="After" className="map-image" style={{ transform: `translateX(-${sliderPosition}%)` }} />
                   <div className="map-label font-mono" style={{ right: 16, left: 'auto' }}>Time: OCT 2026</div>
                 </div>
-                
-                <input 
-                  type="range" 
-                  min="0" 
-                  max="100" 
-                  value={sliderPosition} 
+
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={sliderPosition}
                   onChange={handleSliderChange}
                   className="comparison-slider"
                 />
-                
+
                 <div className="slider-handle" style={{ left: `${sliderPosition}%` }}>
                   <div className="handle-line"></div>
                   <div className="handle-button">
@@ -87,7 +87,7 @@ export default function WorkspaceShowcase() {
                 <div className="panel-content">
                   <div className="flex items-center gap-2">
                     <div className="ai-avatar"><img src="/vite.svg" width="16" /></div>
-                    <span className="text-sm">"Calculate deforested area since 2021."</span>
+                    <span className="text-sm">"Show watershed change over the last 5 years."</span>
                   </div>
                   <button className="btn-primary mt-2 text-xs w-full">Ask</button>
                 </div>
@@ -95,29 +95,32 @@ export default function WorkspaceShowcase() {
             </div>
 
             <div className="ws-right-panel hide-mobile glass-panel">
-              <h4 className="text-sm font-semibold mb-4">ANALYSIS: DEFORESTATION</h4>
-              
+              <h4 className="text-sm font-semibold mb-4">ANALYSIS: WATERSHED CHANGE</h4>
+
               <div className="panel-section">
                 <div className="text-xs text-gray mb-1">Status</div>
-                <div className="flex items-center gap-2 text-success text-sm">
-                  <CheckCircle2 size={14} /> Completed
+                <div className="flex items-center gap-2 text-success text-sm font-mono">
+                  <CheckCircle2 size={14} /> VISUAL PREVIEW
                 </div>
               </div>
 
               <div className="panel-section">
-                <div className="text-xs text-gray mb-1">Affected Area</div>
-                <div className="text-xl font-mono">4.2 KM²</div>
-              </div>
-              
-              <div className="panel-section">
-                <div className="text-xs text-gray mb-1">Confidence</div>
-                <div className="text-sm font-mono">94.2%</div>
+                <div className="text-xs text-gray mb-2">Layers</div>
+                <div className="text-sm font-mono text-gray">
+                  • Water<br />
+                  • Vegetation<br />
+                  • Land Cover<br />
+                  • Interventions
+                </div>
               </div>
 
               <div className="panel-section">
-                <div className="text-xs text-gray mb-2">Legend</div>
-                <div className="legend-item"><span className="color-box bg-red"></span> Deforested</div>
-                <div className="legend-item"><span className="color-box bg-green"></span> Forest</div>
+                <div className="text-xs text-gray mb-2">Evidence</div>
+                <div className="text-sm font-mono text-gray">
+                  • Satellite<br />
+                  • Temporal comparison<br />
+                  • Field observation
+                </div>
               </div>
             </div>
           </div>

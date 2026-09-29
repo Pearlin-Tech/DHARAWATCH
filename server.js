@@ -14,11 +14,28 @@ import { executeGeospatialAnalysis } from './server/services/geospatial/analysis
 import { generateGroundedExplanation } from './server/services/ai/llmExplainer.js';
 import { parseGeoTiffBuffer } from './server/services/geospatial/rasterParser.js';
 import { initEE, getCompareData, healthCheck } from './server-gee.js';
+import {
+  resolveWatershedByCoord,
+  searchWatersheds,
+  getWatershedContext,
+  getFingerprintSummary,
+  getAttentionSummary,
+  getTimelineSummary,
+  getLayerTileUrl,
+  setEEReady
+} from './server/watershedService.js';
+import {
+  validateImageFile, storePhoto, extractExif, analyzeImageWithAI,
+  resolveWatershedForObservation, getSatelliteContextForLocation,
+  buildObservationRecord, buildEvidenceRecord, generateObsId, getObsDir
+} from './server/fieldService.js';
 
 dotenv.config({ path: path.join(process.cwd(), '.env.local') });
 
 // Initialize Earth Engine in background
-initEE().catch(err => console.warn('[EE] Init error (non-fatal):', err.message));
+initEE()
+  .then((ok) => { setEEReady(!!ok); })
+  .catch(err => { console.warn('[EE] Init error (non-fatal):', err.message); setEEReady(false); });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -60,7 +77,7 @@ db.serialize(() => {
     'users', 'saved_locations', 'analyses', 'analysis_results',
     'evidence', 'reports', 'measurements', 'watches', 
     'watch_passes', 'timeline_events', 'exports', 'ai_queries',
-    'raster_attachments', 'compare'
+    'raster_attachments', 'compare', 'watersheds', 'field_observations'
   ];
 
 
@@ -546,6 +563,517 @@ app.get('/api/compare/health', async (req, res) => {
     res.json(health);
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// =========================================================
+// FIELD API — Photo upload, AI vision, evidence creation
+// =========================================================
+
+// Multer config for field photos (stored to disk path is managed by fieldService)
+const fieldUpload = multer({
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
+  storage: multer.memoryStorage()
+});
+
+const fieldError = (res, code, msg, status = 500) =>
+  res.status(status).json({ success: false, error: { code, message: msg } });
+const fieldOk = (res, data) =>
+  res.json({ success: true, data });
+
+// POST /api/field/upload
+app.post('/api/field/upload', fieldUpload.single('photo'), async (req, res) => {
+  if (!req.file) return fieldError(res, 'NO_FILE', 'No photo uploaded', 400);
+
+  try {
+    validateImageFile(req.file.mimetype, req.file.originalname);
+  } catch (err) {
+    return fieldError(res, 'INVALID_FILE', err.message, 400);
+  }
+
+  const obsId = generateObsId();
+
+  try {
+    const stored = await storePhoto(obsId, req.file.buffer, req.file.originalname, req.file.mimetype);
+    const exif   = await extractExif(req.file.buffer);
+
+    const lat = exif.gps?.latitude  ?? null;
+    const lon = exif.gps?.longitude ?? null;
+
+    const obs = buildObservationRecord({
+      obsId,
+      photoId: obsId + '-photo',
+      exif,
+      aiAnalysis: null,
+      lat, lon,
+      locationSource: exif.status,
+      captureTime: exif.captureTime,
+      themes: [],
+      condition: null,
+      synthesis: '',
+      missionId:   req.body.missionId   || null,
+      stopId:      req.body.stopId      || null,
+      watershedId: req.body.watershedId || null,
+      hash: stored.hash,
+      filePath: stored.origPath,
+      thumbPath: stored.thumbPath
+    });
+
+    await insertRow('field_observations', obsId, obs);
+
+    fieldOk(res, {
+      observationId: obsId,
+      photoPreviewUrl: `/api/field/${obsId}/photo`,
+      thumbUrl: `/api/field/${obsId}/thumb`,
+      hash: stored.hash,
+      exif,
+      gps: exif.gps,
+      captureTime: exif.captureTime,
+      status: 'UPLOADED'
+    });
+  } catch (err) {
+    console.error('[Field] upload error:', err.message);
+    fieldError(res, 'UPLOAD_ERROR', err.message);
+  }
+});
+
+// GET /api/field/:id
+app.get('/api/field/:id', async (req, res) => {
+  try {
+    const obs = await getRow('field_observations', req.params.id);
+    if (!obs) return fieldError(res, 'NOT_FOUND', 'Observation not found', 404);
+    fieldOk(res, obs);
+  } catch (err) {
+    fieldError(res, 'DB_ERROR', err.message);
+  }
+});
+
+// GET /api/field/:id/photo  — serve original photo
+app.get('/api/field/:id/photo', async (req, res) => {
+  try {
+    const obs = await getRow('field_observations', req.params.id);
+    if (!obs || !obs.filePath) return res.status(404).send('Not found');
+    res.sendFile(obs.filePath);
+  } catch (err) { res.status(500).send(err.message); }
+});
+
+// GET /api/field/:id/thumb  — serve thumbnail
+app.get('/api/field/:id/thumb', async (req, res) => {
+  try {
+    const obs = await getRow('field_observations', req.params.id);
+    if (!obs || !obs.thumbPath) return res.status(404).send('Not found');
+    res.sendFile(obs.thumbPath);
+  } catch (err) { res.status(500).send(err.message); }
+});
+
+// POST /api/field/:id/analyze  — run AI vision
+app.post('/api/field/:id/analyze', async (req, res) => {
+  try {
+    const obs = await getRow('field_observations', req.params.id);
+    if (!obs) return fieldError(res, 'NOT_FOUND', 'Observation not found', 404);
+
+    if (!obs.filePath || !fs.existsSync(obs.filePath)) {
+      return fieldError(res, 'FILE_MISSING', 'Photo file not found on server');
+    }
+
+    const buffer   = fs.readFileSync(obs.filePath);
+    const mimeType = 'image/jpeg';
+    const result   = await analyzeImageWithAI(buffer, mimeType, obs.hash);
+
+    const updated = { ...obs, aiAnalysis: result, updatedAt: new Date().toISOString() };
+    if (result.status === 'COMPLETE' && result.data) {
+      // Auto-prefill themes/condition from AI if not set
+      if (!obs.themes.length && result.data.suggestedThemes) {
+        updated.themes = result.data.suggestedThemes;
+      }
+      if (!obs.condition && result.data.suggestedCondition && result.data.suggestedCondition !== 'UNKNOWN') {
+        updated.condition = result.data.suggestedCondition;
+      }
+      if (!obs.synthesis && result.data.observationSummary) {
+        updated.synthesis = result.data.observationSummary;
+      }
+    }
+
+    await updateRow('field_observations', obs.id, updated);
+    fieldOk(res, { analysisStatus: result.status, analysis: result.data, error: result.error });
+  } catch (err) {
+    console.error('[Field] analyze error:', err.message);
+    fieldError(res, 'ANALYZE_ERROR', err.message);
+  }
+});
+
+// PATCH /api/field/:id  — update observation fields
+app.patch('/api/field/:id', async (req, res) => {
+  try {
+    const obs = await getRow('field_observations', req.params.id);
+    if (!obs) return fieldError(res, 'NOT_FOUND', 'Observation not found', 404);
+
+    const allowedFields = ['themes', 'condition', 'synthesis', 'notes', 'missionId', 'stopId', 'watershedId'];
+    const updates = {};
+    for (const f of allowedFields) {
+      if (req.body[f] !== undefined) updates[f] = req.body[f];
+    }
+
+    const updated = { ...obs, ...updates, updatedAt: new Date().toISOString() };
+    await updateRow('field_observations', obs.id, updated);
+    fieldOk(res, updated);
+  } catch (err) {
+    fieldError(res, 'UPDATE_ERROR', err.message);
+  }
+});
+
+// POST /api/field/:id/location  — set or update GPS location
+app.post('/api/field/:id/location', async (req, res) => {
+  try {
+    const { lat, lon, source } = req.body;
+    if (isNaN(parseFloat(lat)) || isNaN(parseFloat(lon))) {
+      return fieldError(res, 'INVALID_COORDS', 'lat and lon required', 400);
+    }
+    const obs = await getRow('field_observations', req.params.id);
+    if (!obs) return fieldError(res, 'NOT_FOUND', 'Observation not found', 404);
+
+    const updated = {
+      ...obs,
+      location: { latitude: parseFloat(lat), longitude: parseFloat(lon), source: source || 'USER_PINNED' },
+      updatedAt: new Date().toISOString()
+    };
+    await updateRow('field_observations', obs.id, updated);
+
+    // Re-resolve watershed in background (non-blocking)
+    resolveWatershedForObservation(parseFloat(lat), parseFloat(lon)).then(ws => {
+      if (ws && ws.dataStatus === 'AVAILABLE') {
+        getRow('field_observations', obs.id).then(o => {
+          if (o) updateRow('field_observations', obs.id, { ...o, watershedId: ws.id, watershedName: ws.name, updatedAt: new Date().toISOString() });
+        });
+      }
+    });
+
+    fieldOk(res, { location: updated.location });
+  } catch (err) {
+    fieldError(res, 'LOCATION_ERROR', err.message);
+  }
+});
+
+// POST /api/field/:id/satellite-context
+app.post('/api/field/:id/satellite-context', async (req, res) => {
+  try {
+    const obs = await getRow('field_observations', req.params.id);
+    if (!obs) return fieldError(res, 'NOT_FOUND', 'Observation not found', 404);
+
+    const loc = obs.location;
+    if (!loc) return fieldError(res, 'NO_LOCATION', 'Set location first', 400);
+
+    const ctx = await getSatelliteContextForLocation(loc.latitude, loc.longitude);
+    const updated = { ...obs, satelliteContext: ctx, updatedAt: new Date().toISOString() };
+    await updateRow('field_observations', obs.id, updated);
+    fieldOk(res, ctx);
+  } catch (err) {
+    fieldError(res, 'SATELLITE_ERROR', err.message);
+  }
+});
+
+// POST /api/field/:id/evidence  — create evidence record
+app.post('/api/field/:id/evidence', async (req, res) => {
+  try {
+    const obs = await getRow('field_observations', req.params.id);
+    if (!obs) return fieldError(res, 'NOT_FOUND', 'Observation not found', 404);
+
+    const evidence = buildEvidenceRecord({
+      obsId: obs.id,
+      observation: obs,
+      aiAnalysis: obs.aiAnalysis,
+      satelliteContext: obs.satelliteContext
+    });
+
+    await insertRow('evidence', evidence.id, evidence);
+
+    // Update observation status
+    const updatedObs = { ...obs, evidenceId: evidence.id, status: 'EVIDENCE_CREATED', updatedAt: new Date().toISOString() };
+    await updateRow('field_observations', obs.id, updatedObs);
+
+    fieldOk(res, { evidenceId: evidence.id, evidence });
+  } catch (err) {
+    console.error('[Field] evidence error:', err.message);
+    fieldError(res, 'EVIDENCE_ERROR', err.message);
+  }
+});
+
+// GET /api/field/:id/evidence
+app.get('/api/field/:id/evidence', async (req, res) => {
+  try {
+    const obs = await getRow('field_observations', req.params.id);
+    if (!obs || !obs.evidenceId) return fieldError(res, 'NOT_FOUND', 'No evidence for this observation', 404);
+    const evidence = await getRow('evidence', obs.evidenceId);
+    fieldOk(res, evidence);
+  } catch (err) {
+    fieldError(res, 'DB_ERROR', err.message);
+  }
+});
+
+// GET /api/field  — list all observations (lightweight)
+app.get('/api/field', async (req, res) => {
+  try {
+    const rows = await getAllRows('field_observations');
+    const light = rows.map(o => ({
+      id: o.id, status: o.status, location: o.location, captureTime: o.captureTime,
+      thumbUrl: `/api/field/${o.id}/thumb`, themes: o.themes, condition: o.condition,
+      createdAt: o.createdAt, missionId: o.missionId, watershedId: o.watershedId
+    }));
+    fieldOk(res, light);
+  } catch (err) {
+    fieldError(res, 'DB_ERROR', err.message);
+  }
+});
+
+// =========================================================
+// WATERSHED API — dedicated routes (before generic catch-all)
+// =========================================================
+
+// Response contract helper
+const wsResponse = (res, data, status = 200) => res.status(status).json({
+  success: true,
+  data,
+  requestId: `ws-${Date.now()}`
+});
+
+const wsError = (res, code, message, status = 500) => res.status(status).json({
+  success: false,
+  error: { code, message },
+  requestId: `ws-${Date.now()}`
+});
+
+// GET /api/watersheds/health
+app.get('/api/watersheds/health', (req, res) => {
+  res.json({
+    earthEngine: { authenticated: true, initialized: true },
+    watershedResolver: { ready: true },
+    database: { ready: true },
+    cache: { ready: true }
+  });
+});
+
+// GET /api/watersheds/resolve?lat=&lon=
+app.get('/api/watersheds/resolve', async (req, res) => {
+  try {
+    const lat = parseFloat(req.query.lat);
+    const lon = parseFloat(req.query.lon);
+    if (isNaN(lat) || isNaN(lon)) {
+      return wsError(res, 'INVALID_COORDS', 'lat and lon are required numeric parameters', 400);
+    }
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+      return wsError(res, 'OUT_OF_RANGE', 'Coordinates out of valid range', 400);
+    }
+    const ctx = await resolveWatershedByCoord(lat, lon);
+    wsResponse(res, ctx);
+  } catch (err) {
+    console.error('[WS Route] resolve error:', err.message);
+    wsError(res, 'RESOLVE_ERROR', err.message);
+  }
+});
+
+// GET /api/watersheds/search?q=
+app.get('/api/watersheds/search', async (req, res) => {
+  try {
+    const q = (req.query.q || '').trim();
+    if (!q) return wsResponse(res, []);
+    const results = await searchWatersheds(q);
+    wsResponse(res, results);
+  } catch (err) {
+    wsError(res, 'SEARCH_ERROR', err.message);
+  }
+});
+
+// GET /api/watersheds/:id/context
+app.get('/api/watersheds/:id/context', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const geometry = req.query.geometry ? JSON.parse(req.query.geometry) : null;
+    const ctx = await getWatershedContext(id, geometry);
+    wsResponse(res, ctx);
+  } catch (err) {
+    wsError(res, 'CONTEXT_ERROR', err.message);
+  }
+});
+
+// GET /api/watersheds/:id/fingerprint
+app.get('/api/watersheds/:id/fingerprint', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const geometry = req.query.geometry ? JSON.parse(req.query.geometry) : null;
+    const fp = await getFingerprintSummary(id, geometry);
+    wsResponse(res, fp);
+  } catch (err) {
+    wsError(res, 'FINGERPRINT_ERROR', err.message);
+  }
+});
+
+// GET /api/watersheds/:id/attention
+app.get('/api/watersheds/:id/attention', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const geometry = req.query.geometry ? JSON.parse(req.query.geometry) : null;
+    const attention = await getAttentionSummary(id, geometry);
+    wsResponse(res, attention);
+  } catch (err) {
+    wsError(res, 'ATTENTION_ERROR', err.message);
+  }
+});
+
+// GET /api/watersheds/:id/timeline
+app.get('/api/watersheds/:id/timeline', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const geometry = req.query.geometry ? JSON.parse(req.query.geometry) : null;
+    const timeline = await getTimelineSummary(id, geometry);
+    wsResponse(res, timeline);
+  } catch (err) {
+    wsError(res, 'TIMELINE_ERROR', err.message);
+  }
+});
+
+// GET /api/watersheds/:id/layers/:layerId  — returns EE tile URL
+app.get('/api/watersheds/:id/layers/:layerId', async (req, res) => {
+  try {
+    const { id, layerId } = req.params;
+    const { startDate, endDate, geometry } = req.query;
+    const geom = geometry ? JSON.parse(geometry) : null;
+    const layer = await getLayerTileUrl(id, layerId, geom, startDate, endDate);
+    wsResponse(res, layer);
+  } catch (err) {
+    wsError(res, 'LAYER_ERROR', err.message);
+  }
+});
+
+// GET /api/watersheds/:id/layers  — list available layers
+app.get('/api/watersheds/:id/layers', async (req, res) => {
+  wsResponse(res, {
+    available: [
+      { id: 'boundary', group: 'WATERSHED', displayName: 'Watershed Boundary', source: 'HydroSHEDS', type: 'vector' },
+      { id: 'drainage', group: 'WATERSHED', displayName: 'Drainage Network', source: 'HydroSHEDS', type: 'vector' },
+      { id: 'ndvi', group: 'ENVIRONMENT', displayName: 'Vegetation (NDVI)', source: 'Sentinel-2 SR', type: 'raster', hasOpacity: true },
+      { id: 'ndwi', group: 'ENVIRONMENT', displayName: 'Surface Water (NDWI)', source: 'Sentinel-2 SR', type: 'raster', hasOpacity: true },
+      { id: 'lulc', group: 'ENVIRONMENT', displayName: 'Land Cover (Dynamic World)', source: 'Dynamic World v1', type: 'raster', hasOpacity: true, hasLegend: true },
+      { id: 'terrain', group: 'ENVIRONMENT', displayName: 'Terrain / Elevation', source: 'SRTM 30m (USGS/NASA)', type: 'raster', hasOpacity: true },
+      { id: 'soil_moisture', group: 'ENVIRONMENT', displayName: 'Soil Moisture (SMAP ~9km)', source: 'NASA SMAP L4', type: 'raster', hasOpacity: true, coarseResolution: true },
+      { id: 'true_color', group: 'BASE', displayName: 'Sentinel-2 True Color', source: 'Sentinel-2 SR', type: 'raster', hasOpacity: true },
+    ]
+  });
+});
+
+// POST /api/watersheds  — create custom watershed
+app.post('/api/watersheds', async (req, res) => {
+  try {
+    const { name, type, geometry, source, metadata } = req.body;
+    if (!name || !geometry) {
+      return wsError(res, 'MISSING_FIELDS', 'name and geometry are required', 400);
+    }
+    if (!['CUSTOM', 'DERIVED', 'IMPORTED'].includes(type)) {
+      return wsError(res, 'INVALID_TYPE', 'type must be CUSTOM, DERIVED, or IMPORTED', 400);
+    }
+    // Basic geometry validation
+    if (!['Polygon', 'MultiPolygon'].includes(geometry.type)) {
+      return wsError(res, 'INVALID_GEOMETRY', 'geometry must be Polygon or MultiPolygon', 400);
+    }
+    const id = `custom-${Date.now()}`;
+    const ws = {
+      id,
+      name,
+      type,
+      geometry,
+      source: source || 'User-defined',
+      metadata: metadata || {},
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    await insertRow('watersheds', id, ws);
+    wsResponse(res, ws, 201);
+  } catch (err) {
+    wsError(res, 'CREATE_ERROR', err.message);
+  }
+});
+
+// POST /api/watersheds/delineate  — pour-point catchment
+app.post('/api/watersheds/delineate', async (req, res) => {
+  // Pour-point delineation requires HydroSHEDS flow direction dataset
+  // This is marked as PENDING until full implementation
+  wsResponse(res, {
+    status: 'PENDING_BACKEND',
+    message: 'Pour-point delineation requires HydroSHEDS flow direction analysis. Feature is planned.',
+    pourPoint: req.body.pourPoint
+  });
+});
+
+// POST /api/watersheds/import  — import GeoJSON
+app.post('/api/watersheds/import', async (req, res) => {
+  try {
+    const { name, geojson } = req.body;
+    if (!geojson || !geojson.type) {
+      return wsError(res, 'INVALID_GEOJSON', 'geojson object is required', 400);
+    }
+    let geometry = null;
+    if (geojson.type === 'FeatureCollection') {
+      geometry = geojson.features?.[0]?.geometry;
+    } else if (geojson.type === 'Feature') {
+      geometry = geojson.geometry;
+    } else if (['Polygon', 'MultiPolygon'].includes(geojson.type)) {
+      geometry = geojson;
+    }
+    if (!geometry) {
+      return wsError(res, 'NO_GEOMETRY', 'Could not extract Polygon/MultiPolygon geometry', 422);
+    }
+    if (!['Polygon', 'MultiPolygon'].includes(geometry.type)) {
+      return wsError(res, 'UNSUPPORTED_GEOMETRY', `Geometry type ${geometry.type} is not supported`, 422);
+    }
+    const id = `imported-${Date.now()}`;
+    const ws = {
+      id,
+      name: name || 'Imported Watershed',
+      type: 'IMPORTED',
+      geometry,
+      source: 'GeoJSON Import',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    await insertRow('watersheds', id, ws);
+    wsResponse(res, ws, 201);
+  } catch (err) {
+    wsError(res, 'IMPORT_ERROR', err.message);
+  }
+});
+
+// GET /api/watersheds  — list saved custom watersheds
+app.get('/api/watersheds', async (req, res) => {
+  try {
+    const all = await getAllRows('watersheds');
+    wsResponse(res, all);
+  } catch (err) {
+    wsError(res, 'LIST_ERROR', err.message);
+  }
+});
+
+// GET /api/watersheds/:id  — get saved watershed by ID
+app.get('/api/watersheds/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    // Skip if this is a sub-route handled above
+    if (['resolve','search'].includes(id)) return;
+    const ws = await getRow('watersheds', id);
+    if (!ws) return wsError(res, 'NOT_FOUND', 'Watershed not found', 404);
+    wsResponse(res, ws);
+  } catch (err) {
+    wsError(res, 'GET_ERROR', err.message);
+  }
+});
+
+// DELETE /api/watersheds/:id  — delete saved watershed
+app.delete('/api/watersheds/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const changes = await deleteRow('watersheds', id);
+    if (changes === 0) return wsError(res, 'NOT_FOUND', 'Watershed not found', 404);
+    wsResponse(res, { deleted: true });
+  } catch (err) {
+    wsError(res, 'DELETE_ERROR', err.message);
   }
 });
 

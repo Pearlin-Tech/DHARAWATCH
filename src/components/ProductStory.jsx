@@ -5,18 +5,32 @@ import './ProductStory.css';
 export default function ProductStory() {
   const stories = [
     {
-      id: 'flood',
+      id: 'water-dynamics',
       icon: <Droplets size={32} />,
-      title: 'Flood Analysis & Hydro-Dynamics',
-      desc: 'Rapidly assess flood extents, calculate affected surface area, and track water receding over time using SAR and NDWI pipelines automatically selected for you.',
+      title: 'Water Dynamics',
+      desc: 'Track water extent and seasonal variation across rivers, ponds, reservoirs and other water bodies.',
       image: '/hero-map.jpg'
     },
     {
-      id: 'vegetation',
+      id: 'vegetation-change',
       icon: <Leaf size={32} />,
-      title: 'Vegetation Health & Deforestation',
-      desc: 'Monitor vast forest regions for illegal logging or measure crop health variations across growing seasons using multi-temporal NDVI comparisons.',
+      title: 'Vegetation Change',
+      desc: 'Measure vegetation condition and temporal spectral change across the watershed.',
       image: '/map-after.jpg'
+    },
+    {
+      id: 'land-intervention',
+      icon: <MapPin size={32} />,
+      title: 'Land & Intervention Impact',
+      desc: 'Relate land-cover change to mapped watershed interventions and field evidence.',
+      image: '/map-before.jpg'
+    },
+    {
+      id: 'field-evidence',
+      icon: <MapPin size={32} />,
+      title: 'Field Evidence',
+      desc: 'Connect geo-tagged ground observations to satellite context.',
+      image: '/field-photo.jpg'
     }
   ];
 
@@ -24,7 +38,7 @@ export default function ProductStory() {
     <section className="product-story-section" id="use-cases">
       <div className="story-header text-center mb-16">
         <h2 className="text-3xl font-bold uppercase mb-4">Analytical Value</h2>
-        <p className="text-gray max-w-2xl mx-auto text-lg">Applied intelligence across industries. From environmental monitoring to infrastructure verification.</p>
+        <p className="text-gray max-w-2xl mx-auto text-lg">WATERSHED INTELLIGENCE.</p>
       </div>
 
       <div className="stories-container">

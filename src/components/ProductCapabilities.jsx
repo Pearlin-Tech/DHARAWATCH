@@ -8,42 +8,49 @@ export default function ProductCapabilities() {
       id: 'ask',
       icon: <MessageSquare size={24} />,
       title: 'ASK',
-      desc: 'Query satellite imagery using natural language. Get immediate analytical responses.',
+      desc: 'Ask questions about a watershed using natural language.',
       colSpan: 2
     },
     {
-      id: 'detect',
+      id: 'watershed',
       icon: <Map size={24} />,
-      title: 'DETECT',
-      desc: 'Identify changes, anomalies, and specific features across multiple temporal passes.',
+      title: 'WATERSHED',
+      desc: 'Explore watershed boundaries, micro-watersheds, drainage and environmental layers.',
+      colSpan: 1
+    },
+    {
+      id: 'field',
+      icon: <SplitSquareHorizontal size={24} />,
+      title: 'FIELD',
+      desc: 'Connect geo-tagged ground observations with satellite context.',
+      colSpan: 1
+    },
+    {
+      id: 'mission',
+      icon: <Ruler size={24} />,
+      title: 'MISSION',
+      desc: 'Turn change and evidence gaps into focused field missions.',
       colSpan: 1
     },
     {
       id: 'compare',
-      icon: <SplitSquareHorizontal size={24} />,
-      title: 'COMPARE',
-      desc: 'Visually and analytically compare regions across time with sub-meter precision.',
-      colSpan: 1
-    },
-    {
-      id: 'measure',
-      icon: <Ruler size={24} />,
-      title: 'MEASURE',
-      desc: 'Calculate area, distance, and volumetric changes directly on the map interface.',
-      colSpan: 1
-    },
-    {
-      id: 'area',
       icon: <Hexagon size={24} />,
-      title: 'AREA',
-      desc: 'Create custom geofenced regions using conversational boundary definitions.',
+      title: 'COMPARE',
+      desc: 'Compare watershed conditions across time.',
       colSpan: 1
     },
     {
-      id: 'watch',
+      id: 'evidence',
       icon: <Activity size={24} />,
-      title: 'WATCH',
-      desc: 'Set up active monitoring alerts for specific regions based on custom criteria.',
+      title: 'EVIDENCE',
+      desc: 'Trace observations and analytical results back to their sources.',
+      colSpan: 1
+    },
+    {
+      id: 'monitor',
+      icon: <Activity size={24} />,
+      title: 'MONITOR',
+      desc: 'Track watershed conditions and surface change over time.',
       colSpan: 2
     }
   ];
