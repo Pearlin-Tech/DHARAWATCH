@@ -11,7 +11,8 @@
     "test": "vitest run",
     "lint": "oxlint",
     "preview": "vite preview",
-    "seed:public-data": "node scripts/seed-public-data.js"
+    "seed:public-data": "node scripts/seed-public-data.js",
+    "postinstall": "npm run seed:public-data"
   },
   "dependencies": {
     "@google/earthengine": "^1.7.45",
