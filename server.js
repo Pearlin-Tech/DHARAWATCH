@@ -29,6 +29,7 @@ import {
   resolveWatershedForObservation, getSatelliteContextForLocation,
   buildObservationRecord, buildEvidenceRecord, generateObsId, getObsDir
 } from './server/fieldService.js';
+import { getIntelligenceOverview, setDbHelpers } from './server/services/intelligence.js';
 
 dotenv.config({ path: path.join(process.cwd(), '.env.local') });
 
@@ -72,12 +73,13 @@ db.serialize(() => {
     id TEXT PRIMARY KEY,
     data TEXT
   )`);
-  
+
   const tables = [
     'users', 'saved_locations', 'analyses', 'analysis_results',
-    'evidence', 'reports', 'measurements', 'watches', 
+    'evidence', 'reports', 'measurements', 'watches',
     'watch_passes', 'timeline_events', 'exports', 'ai_queries',
-    'raster_attachments', 'compare', 'watersheds', 'field_observations'
+    'raster_attachments', 'compare', 'watersheds', 'field_observations',
+    'evidence_gaps', 'missions'
   ];
 
 
@@ -110,7 +112,7 @@ const getAllRows = (table) => {
 
 const insertRow = (table, id, data) => {
   return new Promise((resolve, reject) => {
-    db.run(`INSERT INTO ${table} (id, data) VALUES (?, ?)`, [id, JSON.stringify(data)], function(err) {
+    db.run(`INSERT INTO ${table} (id, data) VALUES (?, ?)`, [id, JSON.stringify(data)], function (err) {
       if (err) reject(err);
       else resolve(this.lastID);
     });
@@ -119,7 +121,7 @@ const insertRow = (table, id, data) => {
 
 const updateRow = (table, id, data) => {
   return new Promise((resolve, reject) => {
-    db.run(`UPDATE ${table} SET data = ? WHERE id = ?`, [JSON.stringify(data), id], function(err) {
+    db.run(`UPDATE ${table} SET data = ? WHERE id = ?`, [JSON.stringify(data), id], function (err) {
       if (err) reject(err);
       else resolve(this.changes);
     });
@@ -128,12 +130,15 @@ const updateRow = (table, id, data) => {
 
 const deleteRow = (table, id) => {
   return new Promise((resolve, reject) => {
-    db.run(`DELETE FROM ${table} WHERE id = ?`, [id], function(err) {
+    db.run(`DELETE FROM ${table} WHERE id = ?`, [id], function (err) {
       if (err) reject(err);
       else resolve(this.changes);
     });
   });
 };
+
+// Initialize Intelligence DB helpers
+setDbHelpers(getAllRows, getRow);
 
 const detectionJobs = {};
 
@@ -142,7 +147,7 @@ app.post('/api/detection', (req, res) => {
   if (provider === 'demo') {
     return res.status(400).json({ error: 'Local Demo Mode is not allowed in production API.' });
   }
-  
+
   // Basic caching
   const cacheKey = `${req.body.targetType}-${JSON.stringify(req.body.geometry)}`;
   if (detectionJobs[cacheKey] && detectionJobs[detectionJobs[cacheKey]]) {
@@ -158,15 +163,15 @@ app.post('/api/detection', (req, res) => {
     const updateJob = (statusStr) => {
       detectionJobs[jobId].status = statusStr;
     };
-    
+
     try {
-      const timeoutPromise = new Promise((_, reject) => 
+      const timeoutPromise = new Promise((_, reject) =>
         setTimeout(() => reject(new Error('TIMEOUT')), 90000) // 90s timeout
       );
-      
+
       const detectPromise = detectionService.detect(req.body, updateJob);
       const result = await Promise.race([detectPromise, timeoutPromise]);
-      
+
       if (result.status === 'success') {
         // Save authoritative Analysis
         const analysisId = `analysis-${Date.now()}`;
@@ -191,7 +196,7 @@ app.post('/api/detection', (req, res) => {
           summary: result.summary,
           aoi: result.aoi
         });
-        
+
         // Create detection (analysis_results)
         await insertRow('analysis_results', `det-${Date.now()}`, {
           id: `det-${Date.now()}`,
@@ -202,16 +207,16 @@ app.post('/api/detection', (req, res) => {
           detections: result.detections
         });
       }
-      
+
       // Store final result
       Object.assign(detectionJobs[jobId], result);
-      
+
       // If success or handled error, the status is already properly set by detectionService
       // wait, detectionService returns { status: 'success' / 'error' / 'no_results' }
       if (result.status === 'success') detectionJobs[jobId].status = 'ready';
       else if (result.status === 'error') detectionJobs[jobId].status = 'failed';
       else detectionJobs[jobId].status = result.status; // 'no_detections', 'no_candidate_pixels', etc
-      
+
     } catch (error) {
       console.error('Detection API error for job', jobId, error);
       if (error.message === 'TIMEOUT') {
@@ -241,7 +246,7 @@ app.get('/api/earth-engine/health', async (req, res) => {
     const hasProject = !!process.env.EARTH_ENGINE_PROJECT_ID;
     const hasEmail = !!process.env.EARTH_ENGINE_CLIENT_EMAIL;
     const hasKey = !!process.env.EARTH_ENGINE_PRIVATE_KEY;
-    
+
     res.json({
       authenticated: hasProject && hasEmail && hasKey,
       projectConfigured: hasProject,
@@ -352,7 +357,7 @@ app.post('/api/ai/ask', async (req, res) => {
         status: 'VERIFIED',
         analysisType: 'RASTER_UPLOAD_ANALYSIS',
         evidenceStrength: 'High',
-        spatialDistribution: meta.isGeoreferenced !== false 
+        spatialDistribution: meta.isGeoreferenced !== false
           ? `Spatial footprint covers ${meta.areaKm2 || 8.52} km² centered at Lat ${meta.center?.lat || 23.0225}, Lon ${meta.center?.lon || 72.5714}.`
           : 'TIFF without georeferencing',
         observedVsInterpreted: {
@@ -551,6 +556,21 @@ app.post('/api/ai/ask', async (req, res) => {
   }
 });
 
+// ─── Intelligence API ────────────────────────────────────────────────────
+app.get('/api/intelligence/overview', async (req, res) => {
+  try {
+    const filters = {
+      watershedId: req.query.watershedId,
+      dateFrom: req.query.dateFrom,
+      dateTo: req.query.dateTo
+    };
+    const overview = await getIntelligenceOverview(filters);
+    res.json({ success: true, data: overview });
+  } catch (error) {
+    res.status(500).json({ success: false, error: { message: error.message } });
+  }
+});
+
 // ─── Health endpoint (must be BEFORE generic /:resource) ───────────────────
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, service: 'satquery-api', port: PORT, timestamp: new Date().toISOString() });
@@ -595,9 +615,9 @@ app.post('/api/field/upload', fieldUpload.single('photo'), async (req, res) => {
 
   try {
     const stored = await storePhoto(obsId, req.file.buffer, req.file.originalname, req.file.mimetype);
-    const exif   = await extractExif(req.file.buffer);
+    const exif = await extractExif(req.file.buffer);
 
-    const lat = exif.gps?.latitude  ?? null;
+    const lat = exif.gps?.latitude ?? null;
     const lon = exif.gps?.longitude ?? null;
 
     const obs = buildObservationRecord({
@@ -611,8 +631,8 @@ app.post('/api/field/upload', fieldUpload.single('photo'), async (req, res) => {
       themes: [],
       condition: null,
       synthesis: '',
-      missionId:   req.body.missionId   || null,
-      stopId:      req.body.stopId      || null,
+      missionId: req.body.missionId || null,
+      stopId: req.body.stopId || null,
       watershedId: req.body.watershedId || null,
       hash: stored.hash,
       filePath: stored.origPath,
@@ -625,21 +645,44 @@ app.post('/api/field/upload', fieldUpload.single('photo'), async (req, res) => {
     if (lat != null && lon != null) {
       import('./server/fieldService.js').then(({ reverseGeocode, resolveWatershedForObservation }) => {
         resolveWatershedForObservation(lat, lon).then(ws => {
-           if (ws && ws.dataStatus === 'AVAILABLE') {
-             getRow('field_observations', obsId).then(o => {
-               if (o) updateRow('field_observations', obsId, { ...o, watershedId: ws.id, watershedName: ws.name, updatedAt: new Date().toISOString() });
-             });
-           }
+          if (ws && ws.dataStatus === 'AVAILABLE') {
+            getRow('field_observations', obsId).then(o => {
+              if (o) updateRow('field_observations', obsId, { ...o, watershedId: ws.id, watershedName: ws.name, updatedAt: new Date().toISOString() });
+            });
+          }
         });
         reverseGeocode(lat, lon).then(geo => {
-           if (geo) {
-             getRow('field_observations', obsId).then(o => {
-               if (o && o.location) {
-                 const newLoc = { ...o.location, reverseGeocode: geo };
-                 updateRow('field_observations', obsId, { ...o, location: newLoc, updatedAt: new Date().toISOString() });
-               }
-             });
-           }
+          if (geo) {
+            getRow('field_observations', obsId).then(o => {
+              if (o && o.location) {
+                const newLoc = { ...o.location, reverseGeocode: geo };
+                updateRow('field_observations', obsId, { ...o, location: newLoc, updatedAt: new Date().toISOString() });
+              }
+            });
+          }
+        });
+      });
+    }
+
+    // If EXIF GPS found, do reverse geocode and watershed background tasks
+    if (lat != null && lon != null) {
+      import('./server/fieldService.js').then(({ reverseGeocode, resolveWatershedForObservation }) => {
+        resolveWatershedForObservation(lat, lon).then(ws => {
+          if (ws && ws.dataStatus === 'AVAILABLE') {
+            getRow('field_observations', obsId).then(o => {
+              if (o) updateRow('field_observations', obsId, { ...o, watershedId: ws.id, watershedName: ws.name, updatedAt: new Date().toISOString() });
+            });
+          }
+        });
+        reverseGeocode(lat, lon).then(geo => {
+          if (geo) {
+            getRow('field_observations', obsId).then(o => {
+              if (o && o.location) {
+                const newLoc = { ...o.location, reverseGeocode: geo };
+                updateRow('field_observations', obsId, { ...o, location: newLoc, updatedAt: new Date().toISOString() });
+              }
+            });
+          }
         });
       });
     }
@@ -699,9 +742,9 @@ app.post('/api/field/:id/analyze', async (req, res) => {
       return fieldError(res, 'FILE_MISSING', 'Photo file not found on server');
     }
 
-    const buffer   = fs.readFileSync(obs.filePath);
+    const buffer = fs.readFileSync(obs.filePath);
     const mimeType = 'image/jpeg';
-    const result   = await analyzeImageWithAI(buffer, mimeType, obs.hash);
+    const result = await analyzeImageWithAI(buffer, mimeType, obs.hash);
 
     const updated = { ...obs, aiAnalysis: result, updatedAt: new Date().toISOString() };
     if (result.status === 'COMPLETE' && result.data) {
@@ -715,45 +758,54 @@ app.post('/api/field/:id/analyze', async (req, res) => {
       if (!obs.synthesis && result.data.observationSummary) {
         updated.synthesis = result.data.observationSummary;
       }
-      
+
       const { resolveLandmarkFromAI } = await import('./server/fieldService.js');
       const landmark = resolveLandmarkFromAI(result.data);
       if (landmark) {
-         updated.landmark = landmark;
-         // Override location if no GPS or if we trust landmark more for demo
-         if (!updated.location || updated.location.source !== 'PHOTO_EXIF') {
-            updated.location = {
-               latitude: landmark.latitude,
-               longitude: landmark.longitude,
-               source: 'LANDMARK_REGISTRY'
-            };
-            
-            // Re-resolve watershed
-            try {
-              const ws = await resolveWatershedForObservation(landmark.latitude, landmark.longitude);
-              if (ws && ws.dataStatus === 'AVAILABLE') {
-                updated.watershedId = ws.id;
-                updated.watershedName = ws.name;
-              }
-            } catch (e) { console.error('Watershed resolution failed:', e.message); }
+        updated.landmark = landmark;
+        // Override location if no GPS or if we trust landmark more for demo
+        if (!updated.location || updated.location.source !== 'PHOTO_EXIF') {
+          updated.location = {
+            latitude: landmark.latitude,
+            longitude: landmark.longitude,
+            source: 'LANDMARK_REGISTRY'
+          };
 
-            // Auto-fetch satellite context for demo flow
-            try {
-              const satCtx = await getSatelliteContextForLocation(landmark.latitude, landmark.longitude);
-              if (satCtx && satCtx.status === 'AVAILABLE') {
-                updated.satelliteContext = satCtx;
-              } else {
-                updated.satelliteContext = { status: 'UNAVAILABLE', error: satCtx?.error || 'Unknown error' };
-              }
-            } catch (e) { console.error('Satellite context failed:', e.message); }
+          // Re-resolve watershed
+          try {
+            const ws = await resolveWatershedForObservation(landmark.latitude, landmark.longitude);
+            if (ws && ws.dataStatus === 'AVAILABLE') {
+              updated.watershedId = ws.id;
+              updated.watershedName = ws.name;
+            }
+          } catch (e) { console.error('Watershed resolution failed:', e.message); }
 
-            // Reverse Geocode
-            try {
-              const { reverseGeocode } = await import('./server/fieldService.js');
-              const rev = await reverseGeocode(landmark.latitude, landmark.longitude);
-              if (rev) updated.location.reverseGeocode = rev;
-            } catch (e) { console.error('Reverse geocode failed:', e.message); }
-         }
+
+          // Auto-fetch satellite context for demo flow
+          try {
+            const satCtx = await getSatelliteContextForLocation(landmark.latitude, landmark.longitude);
+            if (satCtx && satCtx.status === 'AVAILABLE') {
+              updated.satelliteContext = satCtx;
+            } else {
+              updated.satelliteContext = { status: 'UNAVAILABLE', error: satCtx?.error || 'Unknown error' };
+            }
+          } catch (e) { console.error('Satellite context failed:', e.message); }
+
+          // Reverse Geocode
+          try {
+            const { reverseGeocode } = await import('./server/fieldService.js');
+            const rev = await reverseGeocode(landmark.latitude, landmark.longitude);
+            if (rev) updated.location.reverseGeocode = rev;
+          } catch (e) { console.error('Reverse geocode failed:', e.message); }
+
+          // Reverse Geocode
+          try {
+            const { reverseGeocode } = await import('./server/fieldService.js');
+            const rev = await reverseGeocode(landmark.latitude, landmark.longitude);
+            if (rev) updated.location.reverseGeocode = rev;
+          } catch (e) { console.error('Reverse geocode failed:', e.message); }
+        }
+
 
       }
     }
@@ -802,6 +854,18 @@ app.post('/api/field/:id/location', async (req, res) => {
       updatedAt: new Date().toISOString()
     };
     await updateRow('field_observations', obs.id, updated);
+
+    // Reverse geocode
+    try {
+      const { reverseGeocode } = await import('./server/fieldService.js');
+      const geo = await reverseGeocode(parseFloat(lat), parseFloat(lon));
+      if (geo) {
+        updated.location.reverseGeocode = geo;
+        await updateRow('field_observations', obs.id, updated);
+      }
+    } catch (e) {
+      console.error('Reverse geocode failed:', e.message);
+    }
 
     // Reverse geocode
     try {
@@ -898,6 +962,115 @@ app.get('/api/field', async (req, res) => {
     fieldOk(res, light);
   } catch (err) {
     fieldError(res, 'DB_ERROR', err.message);
+  }
+});
+
+// GET /api/field/context  — consolidated context fetching
+app.get('/api/field/context', async (req, res) => {
+  try {
+    const lat = parseFloat(req.query.latitude);
+    const lon = parseFloat(req.query.longitude);
+    const featureId = req.query.featureId;
+
+    if (isNaN(lat) || isNaN(lon)) {
+      return fieldError(res, 'INVALID_COORDS', 'latitude and longitude are required', 400);
+    }
+
+    // Is this the Sardar Sarovar demo?
+    const isSardar = (lat > 21.82 && lat < 21.85 && lon > 73.73 && lon < 73.76) || (featureId && featureId.toLowerCase().includes('sardar'));
+
+    let context = {
+      status: 'success',
+      mode: isSardar ? 'PUBLIC_SNAPSHOT' : 'LIVE',
+      feature: null,
+      watershed: null,
+      satellite: {
+        status: 'UNAVAILABLE', provider: '—', sceneId: '—', acquisitionDate: '—', cloudCover: '—'
+      },
+      water: {
+        status: 'UNAVAILABLE', source: '—', period: '—', summary: '—'
+      },
+      vegetation: {
+        status: 'UNAVAILABLE', source: '—', period: '—', summary: '—'
+      },
+      infrastructure: [],
+      attentionAreas: [],
+      timeline: [],
+      sources: []
+    };
+
+    if (isSardar) {
+      context.feature = {
+        id: 'sardar-sarovar',
+        name: 'Sardar Sarovar Dam',
+        type: 'DAM',
+        latitude: 21.8315,
+        longitude: 73.7485,
+        river: 'Narmada',
+        watershed: 'Narmada Basin'
+      };
+      context.watershed = {
+        id: 'narmada-basin',
+        name: 'Narmada Basin',
+        source: 'PUBLIC FEATURE DATA',
+        area: '88,000 km²',
+        states: ['Gujarat', 'Madhya Pradesh', 'Maharashtra'],
+        river: 'Narmada'
+      };
+      context.satellite = {
+        status: 'PUBLIC_SNAPSHOT',
+        provider: 'Sentinel-2 (Demo)',
+        sceneId: 'S2A_MSIL2A_20231015T051801_N0509_R062_T43QEU',
+        acquisitionDate: '2023-10-15',
+        cloudCover: '0.4'
+      };
+      context.water = {
+        status: 'PUBLIC_SNAPSHOT',
+        source: 'Public Reservoir Records',
+        period: 'Q4 2023',
+        summary: 'Reservoir near capacity. Active flow observed at spillway.'
+      };
+      context.vegetation = {
+        status: 'PUBLIC_SNAPSHOT',
+        source: 'Sentinel-2 Derived',
+        period: 'Q4 2023',
+        summary: 'Dense riparian vegetation downstream.'
+      };
+    } else {
+      // Resolve Live
+      try {
+        const { resolveWatershedForObservation, getSatelliteContextForLocation, reverseGeocode } = await import('./server/fieldService.js');
+        const ws = await resolveWatershedForObservation(lat, lon);
+        if (ws && ws.dataStatus === 'AVAILABLE') {
+          context.watershed = {
+            id: ws.id, name: ws.name, source: 'LIVE GEOSPATIAL DB', river: '—'
+          };
+        }
+
+        const geo = await reverseGeocode(lat, lon);
+        if (geo) {
+          context.feature = {
+            id: geo.placeName, name: geo.placeName, type: 'LOCATION', latitude: lat, longitude: lon,
+            river: '—', watershed: ws?.name || '—'
+          };
+        }
+
+        const sat = await getSatelliteContextForLocation(lat, lon);
+        if (sat && sat.status === 'AVAILABLE') {
+          context.satellite = {
+            status: 'LIVE', provider: sat.context?.satellite || 'Sentinel',
+            sceneId: sat.context?.sceneId || '—', acquisitionDate: sat.context?.acquisitionDate || '—',
+            cloudCover: sat.context?.cloudCover || '—'
+          };
+        }
+      } catch (e) {
+        console.warn('Live context failure:', e.message);
+      }
+    }
+
+    fieldOk(res, context);
+  } catch (err) {
+    fieldError(res, 'CONTEXT_ERROR', err.message);
   }
 });
 
@@ -1132,7 +1305,7 @@ app.get('/api/watersheds/:id', async (req, res) => {
   try {
     const { id } = req.params;
     // Skip if this is a sub-route handled above
-    if (['resolve','search'].includes(id)) return;
+    if (['resolve', 'search'].includes(id)) return;
     const ws = await getRow('watersheds', id);
     if (!ws) return wsError(res, 'NOT_FOUND', 'Watershed not found', 404);
     wsResponse(res, ws);
@@ -1150,6 +1323,145 @@ app.delete('/api/watersheds/:id', async (req, res) => {
     wsResponse(res, { deleted: true });
   } catch (err) {
     wsError(res, 'DELETE_ERROR', err.message);
+  }
+});
+
+// =========================================================
+// EVIDENCE GAPS API
+// =========================================================
+
+// GET /api/evidence-gaps — list all evidence gaps (optionally filtered by watershed)
+app.get('/api/evidence-gaps', async (req, res) => {
+  try {
+    const { watershedId, status, severity } = req.query;
+    let gaps = await getAllRows('evidence_gaps');
+
+    if (watershedId) {
+      gaps = gaps.filter(g => g.watershedId === watershedId);
+    }
+    if (status) {
+      gaps = gaps.filter(g => g.status === status);
+    }
+    if (severity) {
+      gaps = gaps.filter(g => g.severity === severity);
+    }
+
+    wsResponse(res, gaps);
+  } catch (err) {
+    wsError(res, 'LIST_ERROR', err.message);
+  }
+});
+
+// GET /api/evidence-gaps/:id — get single evidence gap
+app.get('/api/evidence-gaps/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const gap = await getRow('evidence_gaps', id);
+    if (!gap) return wsError(res, 'NOT_FOUND', 'Evidence gap not found', 404);
+    wsResponse(res, gap);
+  } catch (err) {
+    wsError(res, 'GET_ERROR', err.message);
+  }
+});
+
+// POST /api/evidence-gaps — create evidence gap
+app.post('/api/evidence-gaps', async (req, res) => {
+  try {
+    const { watershedId, type, title, description, location, severity, priority, source, metadata } = req.body;
+
+    if (!watershedId || !type || !title) {
+      return wsError(res, 'MISSING_FIELDS', 'watershedId, type, and title are required', 400);
+    }
+
+    const gap = {
+      id: `gap-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      watershedId,
+      type,
+      title,
+      description: description || '',
+      location: location || null,
+      severity: severity || 'MEDIUM',
+      priority: priority || 'MEDIUM',
+      status: 'OPEN',
+      source: source || 'MANUAL',
+      metadata: metadata || {},
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    await insertRow('evidence_gaps', gap.id, gap);
+    wsResponse(res, gap, 201);
+  } catch (err) {
+    wsError(res, 'CREATE_ERROR', err.message);
+  }
+});
+
+// PATCH /api/evidence-gaps/:id — update evidence gap
+app.patch('/api/evidence-gaps/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const existing = await getRow('evidence_gaps', id);
+    if (!existing) return wsError(res, 'NOT_FOUND', 'Evidence gap not found', 404);
+
+    const allowedFields = ['type', 'title', 'description', 'location', 'severity', 'priority', 'status', 'source', 'metadata'];
+    const updates = {};
+    for (const f of allowedFields) {
+      if (req.body[f] !== undefined) updates[f] = req.body[f];
+    }
+
+    const updated = { ...existing, ...updates, updatedAt: new Date().toISOString() };
+    await updateRow('evidence_gaps', id, updated);
+    wsResponse(res, updated);
+  } catch (err) {
+    wsError(res, 'UPDATE_ERROR', err.message);
+  }
+});
+
+// POST /api/evidence-gaps/:id/verify — mark evidence gap as verified
+app.post('/api/evidence-gaps/:id/verify', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { verifiedBy, notes } = req.body;
+    const existing = await getRow('evidence_gaps', id);
+    if (!existing) return wsError(res, 'NOT_FOUND', 'Evidence gap not found', 404);
+
+    const updated = {
+      ...existing,
+      status: 'VERIFIED',
+      verifiedBy: verifiedBy || 'USER',
+      verifiedAt: new Date().toISOString(),
+      verificationNotes: notes || '',
+      updatedAt: new Date().toISOString()
+    };
+
+    await updateRow('evidence_gaps', id, updated);
+    wsResponse(res, updated);
+  } catch (err) {
+    wsError(res, 'VERIFY_ERROR', err.message);
+  }
+});
+
+// POST /api/evidence-gaps/:id/dismiss — dismiss evidence gap
+app.post('/api/evidence-gaps/:id/dismiss', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { dismissedBy, reason } = req.body;
+    const existing = await getRow('evidence_gaps', id);
+    if (!existing) return wsError(res, 'NOT_FOUND', 'Evidence gap not found', 404);
+
+    const updated = {
+      ...existing,
+      status: 'DISMISSED',
+      dismissedBy: dismissedBy || 'USER',
+      dismissedAt: new Date().toISOString(),
+      dismissalReason: reason || '',
+      updatedAt: new Date().toISOString()
+    };
+
+    await updateRow('evidence_gaps', id, updated);
+    wsResponse(res, updated);
+  } catch (err) {
+    wsError(res, 'DISMISS_ERROR', err.message);
   }
 });
 
@@ -1206,7 +1518,7 @@ app.post('/api/mission/generate', async (req, res) => {
   try {
     const { targetId, targetName, targetLat, targetLon, origin, constraints } = req.body;
     const { resolveOriginDetails, generateMissionPlan } = await import('./server/missionService.js');
-    
+
     const targetWatershed = {
       id: targetId,
       name: targetName,
@@ -1226,10 +1538,10 @@ app.post('/api/mission/generate', async (req, res) => {
     }
 
     const mission = await generateMissionPlan(targetWatershed, originGeo, constraints);
-    
+
     // Save generated mission
     await insertRow('missions', mission.id, mission);
-    
+
     res.json({ mission });
   } catch (err) {
     console.error('[Mission] generate error:', err);
@@ -1241,7 +1553,7 @@ app.post('/api/mission/preview', async (req, res) => {
   try {
     const { targetId, targetName, targetLat, targetLon, origin, constraints } = req.body;
     const { resolveOriginDetails, generateMissionPlan } = await import('./server/missionService.js');
-    
+
     const targetWatershed = {
       id: targetId,
       name: targetName,
@@ -1263,11 +1575,155 @@ app.post('/api/mission/preview', async (req, res) => {
     const mission = await generateMissionPlan(targetWatershed, originGeo, constraints);
     // Don't save it
     mission.status = 'DRAFT';
-    
+
     res.json({ mission });
   } catch (err) {
     console.error('[Mission] preview error:', err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// =========================================================
+// INTELLIGENCE / COMMAND API
+// =========================================================
+
+// GET /api/intelligence/overview — unified intelligence dashboard
+app.get('/api/intelligence/overview', async (req, res) => {
+  try {
+    const { getIntelligenceOverview, setDbHelpers } = await import('./server/services/intelligence.js');
+    setDbHelpers(getAllRows, getRow);
+
+    const filters = {
+      watershedId: req.query.watershedId,
+      dateFrom: req.query.dateFrom,
+      dateTo: req.query.dateTo,
+      region: req.query.region,
+      eventType: req.query.eventType
+    };
+
+    const overview = await getIntelligenceOverview(filters);
+    res.json({ success: true, data: overview });
+  } catch (err) {
+    console.error('[Intelligence] overview error:', err);
+    res.status(500).json({ success: false, error: { code: 'INTELLIGENCE_ERROR', message: err.message } });
+  }
+});
+
+// GET /api/intelligence/events — recent intelligence events
+app.get('/api/intelligence/events', async (req, res) => {
+  try {
+    const { getIntelligenceEvents, setDbHelpers } = await import('./server/services/intelligence.js');
+    setDbHelpers(getAllRows, getRow);
+
+    const filters = {
+      watershedId: req.query.watershedId,
+      dateFrom: req.query.dateFrom,
+      dateTo: req.query.dateTo,
+      region: req.query.region,
+      eventType: req.query.eventType
+    };
+
+    const events = await getIntelligenceEvents(filters);
+    res.json({ success: true, data: events });
+  } catch (err) {
+    console.error('[Intelligence] events error:', err);
+    res.status(500).json({ success: false, error: { code: 'INTELLIGENCE_ERROR', message: err.message } });
+  }
+});
+
+// GET /api/intelligence/anomalies — satellite anomalies
+app.get('/api/intelligence/anomalies', async (req, res) => {
+  try {
+    const { getIntelligenceAnomalies, setDbHelpers } = await import('./server/services/intelligence.js');
+    setDbHelpers(getAllRows, getRow);
+
+    const filters = {
+      watershedId: req.query.watershedId,
+      dateFrom: req.query.dateFrom,
+      dateTo: req.query.dateTo,
+      region: req.query.region,
+      eventType: req.query.eventType
+    };
+
+    const anomalies = await getIntelligenceAnomalies(filters);
+    res.json({ success: true, data: anomalies });
+  } catch (err) {
+    console.error('[Intelligence] anomalies error:', err);
+    res.status(500).json({ success: false, error: { code: 'INTELLIGENCE_ERROR', message: err.message } });
+  }
+});
+
+// GET /api/intelligence/activity — recent activity feed
+app.get('/api/intelligence/activity', async (req, res) => {
+  try {
+    const { getIntelligenceActivity, setDbHelpers } = await import('./server/services/intelligence.js');
+    setDbHelpers(getAllRows, getRow);
+
+    const filters = {
+      watershedId: req.query.watershedId,
+      dateFrom: req.query.dateFrom,
+      dateTo: req.query.dateTo,
+      region: req.query.region,
+      eventType: req.query.eventType
+    };
+
+    const activity = await getIntelligenceActivity(filters);
+    res.json({ success: true, data: activity });
+  } catch (err) {
+    console.error('[Intelligence] activity error:', err);
+    res.status(500).json({ success: false, error: { code: 'INTELLIGENCE_ERROR', message: err.message } });
+  }
+});
+
+// GET global search across seeded/public datasets
+app.get('/api/search', async (req, res) => {
+  try {
+    const q = (req.query.q || '').trim().toLowerCase();
+    if (!q) return res.json([]);
+
+    // Attempt coordinate parse
+    const coordMatch = q.match(/^(-?\d+\.?\d*)\s*[,\s]\s*(-?\d+\.?\d*)$/);
+    if (coordMatch) {
+      const lat = parseFloat(coordMatch[1]);
+      const lon = parseFloat(coordMatch[2]);
+      if (!isNaN(lat) && !isNaN(lon)) {
+        return res.json([{ id: `coord-${lat}-${lon}`, type: 'COORDINATE', name: `Location ${lat}, ${lon}`, lat, lon }]);
+      }
+    }
+
+    const results = [];
+
+    const wss = await getAllRows('watersheds').catch(() => []);
+    const inf = await getAllRows('infrastructure_features').catch(() => []);
+
+    for (const w of wss) {
+      if ((w.name && w.name.toLowerCase().includes(q)) || (w.river && w.river.toLowerCase().includes(q)) || (w.alternateNames && w.alternateNames.join(' ').toLowerCase().includes(q))) {
+        results.push({ ...w, searchType: 'watershed' });
+      }
+    }
+
+    for (const i of inf) {
+      if ((i.name && i.name.toLowerCase().includes(q)) || (i.river && i.river.toLowerCase().includes(q))) {
+        results.push({ ...i, searchType: 'infrastructure' });
+      }
+    }
+
+    // Try external watershed service as fallback if local returns few results
+    if (results.length < 5) {
+      try {
+        const ext = await searchWatersheds(q);
+        for (const e of ext) {
+          if (!results.find(r => r.id === e.id)) {
+            results.push({ ...e, searchType: 'watershed', source: e.source || 'External' });
+          }
+        }
+      } catch (err) { }
+    }
+
+    res.json(results);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Search failed' });
   }
 });
 
@@ -1337,12 +1793,12 @@ app.put('/api/:resource/:id', async (req, res) => {
     if (resource === 'settings') {
       return res.status(400).json({ error: 'Settings is a singleton, use POST /api/settings' });
     }
-    
+
     const existing = await getRow(resource, id);
     if (!existing) {
       return res.status(404).json({ error: 'Item not found' });
     }
-    
+
     const updatedData = { ...existing, ...req.body, id };
     await updateRow(resource, id, updatedData);
     res.json(updatedData);
@@ -1364,7 +1820,7 @@ app.delete('/api/:resource/:id', async (req, res) => {
     if (changes === 0) {
       return res.status(404).json({ error: 'Item not found' });
     }
-    
+
     res.status(204).send();
   } catch (error) {
     console.error(error);
@@ -1391,3 +1847,6 @@ if (!process.env.VERCEL && !process.env.NETLIFY) {
 }
 
 export default app;
+
+// Export database helpers for other modules
+export { getRow, getAllRows, insertRow, updateRow, deleteRow };

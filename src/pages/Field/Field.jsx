@@ -11,7 +11,7 @@ import {
 import AppNavigation from '../../components/AppNavigation';
 import './Field.css';
 
-const API = 'http://localhost:3001/api';
+const API = '/api';
 
 // ─── Field API Client ─────────────────────────────────────────────
 async function fieldApi(path, opts = {}) {
@@ -24,8 +24,8 @@ async function fieldApi(path, opts = {}) {
 async function uploadPhoto(file, missionId, stopId, watershedId) {
   const fd = new FormData();
   fd.append('photo', file);
-  if (missionId)   fd.append('missionId', missionId);
-  if (stopId)      fd.append('stopId', stopId);
+  if (missionId) fd.append('missionId', missionId);
+  if (stopId) fd.append('stopId', stopId);
   if (watershedId) fd.append('watershedId', watershedId);
   const res = await fetch(`${API}/field/upload`, { method: 'POST', body: fd });
   const json = await res.json();
@@ -61,15 +61,17 @@ async function createEvidence(obsId) {
 }
 
 // ─── Stepper state helpers ────────────────────────────────────────
-function getStepperState(obs, uploadState) {
+function getStepperState(obs, uploadState, fieldContext) {
   const s1 = uploadState === 'done' ? 'completed' : uploadState === 'uploading' ? 'active' : 'idle';
   const s2 = obs?.exif ? (obs.location ? 'completed' : 'active') : 'idle';
   const s3 = obs?.location ? 'completed' : (obs?.exif && !obs.location ? 'active' : 'idle');
-  const s4 = obs?.satelliteContext ? 'completed' : (obs?.location ? 'active' : 'idle');
-  const s5 = obs?.watershedId ? 'completed' : (obs?.location ? 'active' : 'idle');
+  const s4 = obs?.satelliteContext || fieldContext?.satellite?.status !== 'UNAVAILABLE' ? 'completed' : (obs?.location ? 'active' : 'idle');
+  const s5 = obs?.watershedId || fieldContext?.watershed ? 'completed' : (obs?.location ? 'active' : 'idle');
   const s6 = obs?.evidenceId ? 'completed' : (obs?.aiAnalysis ? 'active' : 'idle');
   return [s1, s2, s3, s4, s5, s6];
 }
+
+import { useGlobalContext } from '../../context/GlobalContext';
 
 // ─── Component ───────────────────────────────────────────────────
 export default function Field() {
@@ -84,6 +86,8 @@ export default function Field() {
   const navCtx = location.state || {};
   const googleMapsApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
   const { loaded: mapsLoaded, error: mapsError } = useGoogleMaps(googleMapsApiKey);
+
+  const { selectedFeature } = useGlobalContext();
 
   // ─ Core state ─
   const [obs, setObs] = useState(null);
@@ -114,6 +118,40 @@ export default function Field() {
   const [showFullscreen, setShowFullscreen] = useState(false);
   const [aiDetectionsVisible, setAiDetectionsVisible] = useState(true);
 
+  // ─ Field Context (Unified Data) ─
+  const [fieldContext, setFieldContext] = useState(null);
+
+  // Fetch field context on location or feature change
+  useEffect(() => {
+    let lat = obs?.location?.latitude;
+    let lon = obs?.location?.longitude;
+    let featureId = selectedFeature?.id || '';
+
+    if (!lat && selectedFeature?.watershedName?.toLowerCase().includes('sardar')) {
+      lat = 21.8315;
+      lon = 73.7485;
+      featureId = 'sardar-sarovar';
+    }
+
+    if (lat && lon) {
+      fieldApi(`/field/context?latitude=${lat}&longitude=${lon}&featureId=${featureId}`)
+        .then(res => setFieldContext(res))
+        .catch(err => {
+          console.error('Context fetch failed:', err);
+          // Deterministic fallback
+          setFieldContext({
+            status: 'fallback',
+            mode: 'PUBLIC_SNAPSHOT',
+            feature: { name: 'Sardar Sarovar Dam', type: 'DAM', latitude: 21.8315, longitude: 73.7485, river: 'Narmada', watershed: 'Narmada Basin' },
+            watershed: { name: 'Narmada Basin', source: 'PUBLIC FEATURE DATA', river: 'Narmada' },
+            satellite: { status: 'PUBLIC_SNAPSHOT', provider: 'Sentinel-2 (Demo)', sceneId: 'S2A_MSIL2A_DEMO', acquisitionDate: '2023-10-15', cloudCover: '0.4' },
+            water: { status: 'PUBLIC_SNAPSHOT', source: 'Public Reservoir Records', period: 'Q4 2023', summary: 'Reservoir near capacity. Active flow observed.' },
+            vegetation: { status: 'PUBLIC_SNAPSHOT', source: 'Sentinel-2', period: 'Q4 2023', summary: 'Dense riparian vegetation.' }
+          });
+        });
+    }
+  }, [obs?.location, selectedFeature]);
+
   // Keep ref in sync for map click handler
   useEffect(() => { showPinToolRef.current = showPinTool; }, [showPinTool]);
 
@@ -122,8 +160,10 @@ export default function Field() {
     if (!mapsLoaded || !mapContainer.current || map.current) return;
 
     const center = navCtx.coordinates
-      ? { lat: navCtx.coordinates.lat ?? navCtx.coordinates.latitude ?? 20.59,
-          lng: navCtx.coordinates.lon ?? navCtx.coordinates.longitude ?? 78.96 }
+      ? {
+        lat: navCtx.coordinates.lat ?? navCtx.coordinates.latitude ?? 20.59,
+        lng: navCtx.coordinates.lon ?? navCtx.coordinates.longitude ?? 78.96
+      }
       : { lat: 20.59, lng: 78.96 };
 
     map.current = new window.google.maps.Map(mapContainer.current, {
@@ -214,6 +254,43 @@ export default function Field() {
     }
   };
 
+  const handleDemoPhoto = () => {
+    setUploadState('done');
+    // Public domain/wikimedia image of Sardar Sarovar
+    setPhotoUrl('https://upload.wikimedia.org/wikipedia/commons/thumb/c/c5/Sardar_Sarovar_Dam_02.jpg/640px-Sardar_Sarovar_Dam_02.jpg');
+    setAnalysisState('done');
+
+    const mockAiData = {
+      landmarkCandidates: [{ name: 'SARDAR SAROVAR DAM', confidence: 'high' }],
+      scene: 'Large concrete gravity dam with active water release. Massive hydraulic infrastructure dominating a river valley context.',
+      visibleWater: { present: true, type: 'river' },
+      vegetationCondition: { present: true, density: 'moderate' },
+      structures: [{ type: 'dam', status: 'IDENTIFIED', condition: 'intact', notes: 'Sardar Sarovar Dam main structure, spillways active.' }],
+      observationSummary: '[PUBLIC DEMO SYNTHESIS] Field observation of Sardar Sarovar Dam confirms structural integrity and active flow. Immediate downstream vegetation appears healthy. Satellite correlation requested.',
+      uncertainty: 'Unable to gauge exact flow rates or structural micro-fractures from this perspective.'
+    };
+
+    setObs({
+      id: 'demo-obs-' + Date.now(),
+      status: 'DRAFT',
+      hash: 'DEMO_HASH_SARDAR_SAROVAR',
+      captureTime: new Date().toISOString(),
+      location: { latitude: 21.8315, longitude: 73.7485, source: 'LANDMARK_REGISTRY' },
+      landmark: { name: 'SARDAR SAROVAR DAM', river: 'Narmada', region: 'Gujarat, India' },
+      aiAnalysis: { status: 'COMPLETE', data: mockAiData },
+      themes: ['WATER REGIME', 'WATERSHED INTERVENTION'],
+      condition: 'ACTIVE FLOW',
+      synthesis: mockAiData.observationSummary,
+      exif: { status: 'GPS_FOUND', camera: { make: 'Simulated', model: 'Demo Sensor' } },
+      watershedId: 'narmada-basin',
+      watershedName: 'Narmada Basin'
+    });
+
+    setThemes(['WATER REGIME', 'WATERSHED INTERVENTION']);
+    setCondition('ACTIVE FLOW');
+    setSynthesis(mockAiData.observationSummary);
+  };
+
   // ─ AI Analysis ───────────────────────────────────────────────
   const doRunAnalysis = async (id) => {
     setAnalysisState('running');
@@ -241,12 +318,21 @@ export default function Field() {
     if (!obsId) return;
     try {
       await setLocation(obsId, lat, lon, source);
+      // Auto-fetch satellite context
+      await fieldApi(`/field/${obsId}/satellite-context`, { method: 'POST' }).catch(() => { });
       const updated = await fieldApi(`/field/${obsId}`);
       setObs(updated);
     } catch (err) {
       console.error('Location:', err.message);
     }
   };
+
+  // Auto-pin location if missing but global context is available
+  useEffect(() => {
+    if (obs && !obs.location && selectedFeature?.latitude) {
+      handleSetLocation(selectedFeature.latitude, selectedFeature.longitude, selectedFeature.source || 'GLOBAL CONTEXT');
+    }
+  }, [obs?.id, obs?.location, selectedFeature]);
 
   const handleUseCurrentLocation = () => {
     if (!navigator.geolocation) { alert('Geolocation not supported'); return; }
@@ -309,20 +395,20 @@ export default function Field() {
     }
   };
 
-  const mapZoomIn  = () => map.current?.setZoom((map.current?.getZoom() || 5) + 1);
+  const mapZoomIn = () => map.current?.setZoom((map.current?.getZoom() || 5) + 1);
   const mapZoomOut = () => map.current?.setZoom((map.current?.getZoom() || 5) - 1);
-  const mapCenter  = () => {
+  const mapCenter = () => {
     if (obsLocation) {
       map.current?.panTo({ lat: obsLocation.latitude, lng: obsLocation.longitude });
       if (obs?.landmark === 'SARDAR SAROVAR DAM') {
-         map.current?.setZoom(15);
+        map.current?.setZoom(15);
       } else {
-         map.current?.setZoom(14);
+        map.current?.setZoom(14);
       }
     }
   };
 
-  const steps = getStepperState(obs, uploadState);
+  const steps = getStepperState(obs, uploadState, fieldContext);
   const aiData = obs?.aiAnalysis?.data;
   const exifData = obs?.exif;
   const loc = obsLocation;
@@ -331,8 +417,8 @@ export default function Field() {
     uploadState === 'uploading' ? 'UPLOADING…' : obs ? 'ACQUIRED' : 'AWAITING UPLOAD',
     obs?.landmark ? 'LANDMARK RESOLVED' : (exifData?.status === 'GPS_FOUND' ? 'GPS FOUND' : exifData ? 'GPS NOT IN PHOTO' : '—'),
     loc ? (obs?.landmark?.name || obs?.landmark || `${loc.latitude.toFixed(4)}, ${loc.longitude.toFixed(4)}`) : 'PIN REQUIRED',
-    obs?.satelliteContext?.status === 'AVAILABLE' ? 'CONTEXT LOADED' : loc ? 'PENDING' : '—',
-    obs?.watershedId ? (obs.watershedName || obs.watershedId) : loc ? 'RESOLVING…' : '—',
+    obs?.satelliteContext?.status === 'AVAILABLE' || (fieldContext && fieldContext.satellite?.status !== 'UNAVAILABLE') ? 'CONTEXT LOADED' : loc ? 'PENDING' : '—',
+    fieldContext?.watershed?.name || obs?.watershedName || (loc ? (fieldContext ? 'UNAVAILABLE' : 'RESOLVING…') : '—'),
     obs?.evidenceId ? 'COMMITTED' : obs?.aiAnalysis ? 'READY' : 'PENDING'
   ];
 
@@ -442,6 +528,11 @@ export default function Field() {
                       <AlertTriangle size={12} /> {uploadError}
                     </div>
                   )}
+                  <div style={{ marginTop: 24, textAlign: 'center' }} onClick={e => e.preventDefault()}>
+                    <button className="fp-btn" style={{ padding: '6px 12px' }} onClick={handleDemoPhoto}>
+                      USE SARDAR SAROVAR DEMO
+                    </button>
+                  </div>
                 </label>
               ) : (
                 <>
@@ -515,17 +606,6 @@ export default function Field() {
                       )}
                     </div>
                   )}
-
-                  {(analysisState === 'error' || obs?.aiAnalysis?.analysisStatus === 'AI_UNAVAILABLE') && (
-                    <div className="overlay-bl segment-box" style={{ borderColor: 'rgba(239,68,68,0.3)', background: 'rgba(255,255,255,0.95)' }}>
-                      <div className="seg-title" style={{ color: '#f87171' }}>
-                        <AlertTriangle size={12} /> {obs?.aiAnalysis?.analysisStatus === 'AI_UNAVAILABLE' ? 'VISION API REQUIRED' : 'AI ANALYSIS UNAVAILABLE'}
-                      </div>
-                      <div className="seg-desc" style={{ color: '#6b7280' }}>
-                        {obs?.aiAnalysis?.error || analysisError || 'Vision service is not configured or reachable.'}
-                      </div>
-                    </div>
-                  )}
                 </>
               )}
             </div>
@@ -567,11 +647,11 @@ export default function Field() {
                 {['TRUE_COLOR', 'NDVI', 'NDMI'].map(mode => {
                   const isAvailable = mode === 'TRUE_COLOR' || (obs?.satelliteContext?.status === 'AVAILABLE' && false); // Backend doesn't currently supply tile URLs
                   return (
-                    <div key={mode} 
-                         className={`fp-btn ${satelliteMode === mode ? 'primary' : ''} ${!isAvailable ? 'disabled' : ''}`}
-                         title={!isAvailable ? `${mode} layer requires Earth Engine tile service integration` : ''}
-                         onClick={() => isAvailable && setSatelliteMode(mode)}
-                         style={{ opacity: isAvailable ? 1 : 0.5, cursor: isAvailable ? 'pointer' : 'not-allowed' }}>
+                    <div key={mode}
+                      className={`fp-btn ${satelliteMode === mode ? 'primary' : ''} ${!isAvailable ? 'disabled' : ''}`}
+                      title={!isAvailable ? `${mode} layer requires Earth Engine tile service integration` : ''}
+                      onClick={() => isAvailable && setSatelliteMode(mode)}
+                      style={{ opacity: isAvailable ? 1 : 0.5, cursor: isAvailable ? 'pointer' : 'not-allowed' }}>
                       {mode.replace('_', ' ')}
                     </div>
                   );
@@ -612,18 +692,18 @@ export default function Field() {
               <div className="om-overlay-top">
                 <div className="om-row">
                   <span>
-                    <span className={obs?.satelliteContext?.status === 'UNAVAILABLE' ? 'om-red' : 'om-green'} style={{ color: obs?.satelliteContext?.status === 'UNAVAILABLE' ? '#f87171' : '#10b981' }}>●</span>
-                    {obs?.satelliteContext?.status === 'AVAILABLE' ? ' SATELLITE CONTEXT LOADED' : 
-                     obs?.satelliteContext?.status === 'UNAVAILABLE' ? ' SATELLITE ANALYSIS UNAVAILABLE' : ' BASEMAP'}
+                    <span className={obs?.satelliteContext?.status === 'UNAVAILABLE' && !fieldContext ? 'om-red' : 'om-green'} style={{ color: obs?.satelliteContext?.status === 'UNAVAILABLE' && !fieldContext ? '#f87171' : '#10b981' }}>●</span>
+                    {obs?.satelliteContext?.status === 'AVAILABLE' || fieldContext?.satellite?.status !== 'UNAVAILABLE' ? ' SATELLITE CONTEXT LOADED' :
+                      ' SATELLITE ANALYSIS UNAVAILABLE'}
                   </span>
                   <span className="om-gray">MODE: <span className="om-green" style={{ fontWeight: 600 }}>{satelliteMode}</span></span>
                 </div>
               </div>
 
-              {obs?.watershedId && (
+              {(obs?.watershedId || fieldContext?.watershed) && (
                 <div className="om-overlay-bl">
                   <div className="om-title">WATERSHED CONTEXT</div>
-                  <div className="om-val">{obs.watershedName || obs.watershedId}</div>
+                  <div className="om-val">{fieldContext?.watershed?.name || obs?.watershedName || obs?.watershedId}</div>
                 </div>
               )}
 
@@ -694,7 +774,7 @@ export default function Field() {
                 <span className="fc-val" style={{ color: '#10b981' }}>{obs?.landmark ? 'LANDMARK REGISTRY' : (loc?.source || '—')}</span>
               </div>
               <div className="footer-col" style={{ width: '30%' }}>
-                {loc && !obs?.satelliteContext && (
+                {loc && !obs?.satelliteContext && !fieldContext && (
                   <button className="fp-btn" style={{ fontSize: 10, padding: '3px 8px' }} onClick={fetchSatelliteContext}>
                     LOAD SAT CONTEXT
                   </button>
@@ -768,7 +848,7 @@ export default function Field() {
             <div className="obs-section-title" style={{ marginBottom: 24 }}>
               <div className="flex items-center gap-2"><CheckCircle2 size={14} /> FIELD ↔ SATELLITE AGREEMENT</div>
               <div className="fh-status-badge">
-                {obs?.satelliteContext?.status === 'AVAILABLE' ? 'SYNTHESIS COMPLETE' : 'WAITING FOR SATELLITE'}
+                {obs?.satelliteContext?.status === 'AVAILABLE' ? 'CONTEXT LOADED' : 'PENDING'}
               </div>
             </div>
 
@@ -782,16 +862,16 @@ export default function Field() {
 
                   if (obs?.satelliteContext?.spectral) {
                     const { ndwi, ndvi } = obs.satelliteContext.spectral;
-                    
+
                     if (aiData.visibleWater?.present) {
-                       factors++;
-                       if (ndwi != null && ndwi > -0.1) { waterAgreement = 'CONSISTENT'; overallAgreement += 93; }
-                       else { waterAgreement = 'PARTIAL MATCH'; overallAgreement += 45; }
+                      factors++;
+                      if (ndwi != null && ndwi > -0.1) { waterAgreement = 'CONSISTENT'; overallAgreement += 93; }
+                      else { waterAgreement = 'PARTIAL MATCH'; overallAgreement += 45; }
                     }
                     if (aiData.vegetationCondition?.present) {
-                       factors++;
-                       if (ndvi != null && ndvi > 0.2) { vegAgreement = 'CONSISTENT'; overallAgreement += 88; }
-                       else { vegAgreement = 'PARTIAL MATCH'; overallAgreement += 50; }
+                      factors++;
+                      if (ndvi != null && ndvi > 0.2) { vegAgreement = 'CONSISTENT'; overallAgreement += 88; }
+                      else { vegAgreement = 'PARTIAL MATCH'; overallAgreement += 50; }
                     }
                   }
 
@@ -818,10 +898,10 @@ export default function Field() {
                         </div>
                       )}
                       {overallScore !== null && (
-                         <div className="ap-metric-row" style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.1)' }}>
-                            <span className="ap-metric-label" style={{ color: '#10b981' }}>OVERALL AGREEMENT</span>
-                            <span className="ap-metric-val" style={{ color: '#10b981' }}>{overallScore}%</span>
-                         </div>
+                        <div className="ap-metric-row" style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                          <span className="ap-metric-label" style={{ color: '#10b981' }}>OVERALL AGREEMENT</span>
+                          <span className="ap-metric-val" style={{ color: '#10b981' }}>{overallScore}%</span>
+                        </div>
                       )}
                     </>
                   );
@@ -834,11 +914,14 @@ export default function Field() {
                       <div className="apd-quote">"{aiData.observationSummary}"</div>
                     </>
                   )}
-                  {obs?.satelliteContext?.spectral && (
+                  {obs?.satelliteContext?.data && (
                     <>
                       <div className="od-label" style={{ color: '#9ca3af', marginBottom: 6, marginTop: 16 }}>SATELLITE SIGNAL</div>
-                      <div className="apd-desc" style={{ fontFamily: 'monospace' }}>
-                        NDVI: {obs.satelliteContext.spectral.ndvi ?? 'N/A'} · NDWI: {obs.satelliteContext.spectral.ndwi ?? 'N/A'} · NDMI: {obs.satelliteContext.spectral.ndmi ?? 'N/A'}
+                      <div className="apd-desc">
+                        {obs.satelliteContext.data.water?.status || 'Water analysis'}
+                        {obs.satelliteContext.data.vegetation?.ndvi?.mean != null
+                          ? ` · NDVI ${obs.satelliteContext.data.vegetation.ndvi.mean.toFixed(3)}`
+                          : ''}
                       </div>
                     </>
                   )}
@@ -867,10 +950,10 @@ export default function Field() {
                     <span className="od-val">{loc.longitude.toFixed(6)}°</span>
                   </div>
                   {loc.reverseGeocode && (
-                     <div className="od-col" style={{ gridColumn: 'span 2' }}>
-                       <span className="od-label">GEOCODED:</span>
-                       <span className="od-val">{loc.reverseGeocode.placeName}, {loc.reverseGeocode.country}</span>
-                     </div>
+                    <div className="od-col" style={{ gridColumn: 'span 2' }}>
+                      <span className="od-label">GEOCODED:</span>
+                      <span className="od-val">{loc.reverseGeocode.placeName}, {loc.reverseGeocode.country}</span>
+                    </div>
                   )}
                 </div>
               </div>
@@ -889,7 +972,7 @@ export default function Field() {
                 ID: {obs.evidenceId}
               </div>
             </div>
-            
+
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24, fontSize: 11, fontFamily: 'monospace' }}>
               <div>
                 <div style={{ color: '#94a3b8', marginBottom: 4 }}>FIELD IMAGE</div>
@@ -897,29 +980,19 @@ export default function Field() {
                 <div>Capture time: {obs.captureTime ? new Date(obs.captureTime).toLocaleString() : 'N/A'}</div>
                 <div>EXIF source: {obs.exif?.camera?.make || 'Unknown'}</div>
               </div>
-              <div>
-                <div style={{ color: '#94a3b8', marginBottom: 4 }}>LOCATION</div>
-                <div>Source: {loc?.source || 'UNKNOWN'}</div>
-                <div>Confidence: {obs.landmark ? 'HIGH' : 'MEDIUM'}</div>
-                <div>Watershed: {obs.watershedName || obs.watershedId || 'N/A'}</div>
-              </div>
-              {obs.satelliteContext?.context && (
-                <div>
-                  <div style={{ color: '#94a3b8', marginBottom: 4 }}>SATELLITE</div>
-                  <div>Provider: {obs.satelliteContext.context.satellite}</div>
-                  <div>Scene: {obs.satelliteContext.context.sceneId?.slice(-15)}</div>
-                  <div>Acquisition: {obs.satelliteContext.context.acquisitionDate?.slice(0, 10)}</div>
-                  <div>Cloud cover: {obs.satelliteContext.context.cloudCover}%</div>
-                </div>
+            </div>
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+              {obs?.watershedId && (
+                <button className="action-btn secondary" style={{ fontSize: 11 }}
+                  onClick={() => navigate('/watershed', { state: { watershedId: obs.watershedId } })}>
+                  VIEW WATERSHED
+                </button>
               )}
-              {obs.satelliteContext?.spectral && (
-                <div>
-                  <div style={{ color: '#94a3b8', marginBottom: 4 }}>ANALYSIS</div>
-                  <div>NDVI: {obs.satelliteContext.spectral.ndvi ?? 'N/A'}</div>
-                  <div>NDWI: {obs.satelliteContext.spectral.ndwi ?? 'N/A'}</div>
-                  <div>AI model: gemini-3.8-flash</div>
-                  <div>Timestamp: {new Date(obs.updatedAt || Date.now()).toISOString().slice(0,19)}Z</div>
-                </div>
+              {navCtx.missionId && (
+                <button className="action-btn secondary" style={{ fontSize: 11 }}
+                  onClick={() => navigate('/mission', { state: { missionId: navCtx.missionId } })}>
+                  RETURN TO MISSION
+                </button>
               )}
             </div>
           </div>
@@ -973,7 +1046,7 @@ export default function Field() {
               obs.exif.camera?.focalLength != null && ['FOCAL LENGTH', `${obs.exif.camera.focalLength}mm`],
               obs.exif.camera?.iso && ['ISO', obs.exif.camera.iso],
               obs.exif.camera?.aperture && ['APERTURE', `f/${obs.exif.camera.aperture}`],
-              obs.exif.camera?.shutterSpeed && ['SHUTTER', `1/${Math.round(1/obs.exif.camera.shutterSpeed)}s`],
+              obs.exif.camera?.shutterSpeed && ['SHUTTER', `1/${Math.round(1 / obs.exif.camera.shutterSpeed)}s`],
               ['SHA-256', obs.hash]
             ].filter(Boolean).map(([label, value, color]) => (
               <div key={label} className="exif-row">

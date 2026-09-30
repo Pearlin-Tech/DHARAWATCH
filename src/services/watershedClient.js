@@ -5,7 +5,7 @@
  * All panels consume from this service — no independent state invention.
  */
 
-const API = 'http://localhost:3001/api';
+const API = '/api';
 
 async function safeFetch(url, opts = {}) {
   try {
@@ -29,8 +29,9 @@ export async function resolveWatershed(lat, lon, signal) {
 
 // ─── Search watersheds ────────────────────────────────────────────
 export async function searchWatersheds(query, signal) {
-  return safeFetch(`${API}/watersheds/search?q=${encodeURIComponent(query)}`, { signal });
+  return safeFetch(`${API}/search?q=${encodeURIComponent(query)}`, { signal });
 }
+
 
 // ─── List saved custom watersheds ────────────────────────────────
 export async function listSavedWatersheds(signal) {

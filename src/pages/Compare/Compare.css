@@ -80,7 +80,7 @@
   pointer-events: none;
 }
 
-.layer-label {
+.compare-container .layer-label {
   position: absolute;
   top: 90px;
   left: 120px;
@@ -94,7 +94,7 @@
   color: var(--text-secondary);
 }
 
-.layer-label.right {
+.compare-container .layer-label.right {
   left: auto;
   right: 24px;
   color: var(--accent-blue);

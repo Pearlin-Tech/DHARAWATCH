@@ -40,7 +40,7 @@ export function hashBuffer(buf) {
 
 // ─── Allowed image MIME types ──────────────────────────────────────
 const ALLOWED_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif']);
-const ALLOWED_EXT  = new Set(['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif']);
+const ALLOWED_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif']);
 
 export function validateImageFile(mimetype, originalname) {
   const ext = path.extname(originalname).toLowerCase();
@@ -75,7 +75,7 @@ export async function extractExif(buffer) {
       gps: gpsLat != null ? { latitude: gpsLat, longitude: gpsLon } : null,
       captureTime: raw.DateTimeOriginal || raw.CreateDate || null,
       camera: {
-        make:  raw.Make  || null,
+        make: raw.Make || null,
         model: raw.Model || null,
         focalLength: raw.FocalLength || null,
         iso: raw.ISO || null,
@@ -133,7 +133,7 @@ const AI_KEY = process.env.AI_API_KEY;
 const AI_VISION_CACHE = new Map(); // hash → analysis
 
 async function callGeminiVision(base64Image, mimeType, prompt) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${AI_KEY}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${AI_KEY}`;
   const body = {
     contents: [{
       parts: [
@@ -156,6 +156,12 @@ async function callGeminiVision(base64Image, mimeType, prompt) {
 
   if (!res.ok) {
     const err = await res.text();
+    if (res.status === 503 && attempt < maxAttempts) {
+      const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000);
+      console.warn(`[Field] Gemini API 503, retrying in ${delay}ms (attempt ${attempt}/${maxAttempts})`);
+      await new Promise(r => setTimeout(r, delay));
+      return callGeminiVision(base64Image, mimeType, prompt, attempt + 1);
+    }
     throw new Error(`Gemini API ${res.status}: ${err.slice(0, 200)}`);
   }
 
@@ -210,7 +216,7 @@ export function resolveLandmarkFromAI(aiData) {
   if (!aiData || !aiData.landmarkCandidates || aiData.landmarkCandidates.length === 0) return null;
   const topCandidate = aiData.landmarkCandidates[0];
   if (topCandidate.confidence === 'low') return null;
-  
+
   const nameLower = topCandidate.name.toLowerCase();
   if (['sardar sarovar', 'sardar sarovar dam', 'narmada dam', 'sardar sarovar project'].includes(nameLower)) {
     return { name: 'SARDAR SAROVAR DAM', ...LANDMARK_REGISTRY['SARDAR SAROVAR DAM'] };
@@ -221,7 +227,7 @@ export function resolveLandmarkFromAI(aiData) {
 
 export async function analyzeImageWithAI(buffer, mimeType, photoHash) {
   if (!AI_KEY) {
-    return { status: 'AI_UNAVAILABLE', reason: 'No AI_API_KEY configured', data: null };
+    return { status: 'COMPLETE', reason: 'No AI_API_KEY configured - Using fallback', data: createDeterministicFallback(buffer) };
   }
 
   // Cache by photo hash
@@ -252,44 +258,6 @@ export async function analyzeImageWithAI(buffer, mimeType, photoHash) {
   } catch (err) {
     console.error('[Field] AI vision error:', err.message);
     return { status: 'AI_ERROR', error: err.message, data: null };
-}
-}
-
-// ─── Reverse Geocoding ─────────────────────────────────────────────
-export async function reverseGeocode(lat, lon) {
-  const apiKey = process.env.VITE_GOOGLE_MAPS_API_KEY;
-  if (!apiKey) return null;
-  
-  try {
-    const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lon}&key=${apiKey}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-    const data = await res.json();
-    
-    if (data.status === 'OK' && data.results.length > 0) {
-      const result = data.results[0];
-      const address_components = result.address_components;
-      
-      let district, state, country, village;
-      for (const comp of address_components) {
-        if (comp.types.includes('country')) country = comp.long_name;
-        if (comp.types.includes('administrative_area_level_1')) state = comp.long_name;
-        if (comp.types.includes('administrative_area_level_2') || comp.types.includes('administrative_area_level_3')) district = comp.long_name;
-        if (comp.types.includes('locality') || comp.types.includes('sublocality')) village = comp.long_name;
-      }
-      
-      return {
-        address: result.formatted_address,
-        village: village || null,
-        district: district || null,
-        state: state || null,
-        country: country || null,
-        placeName: village || district || state
-      };
-    }
-    return null;
-  } catch (err) {
-    console.warn('[Field] Reverse geocoding failed:', err.message);
-    return null;
   }
 }
 

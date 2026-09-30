@@ -10,7 +10,8 @@
     "build": "vite build",
     "test": "vitest run",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "seed:public-data": "node scripts/seed-public-data.js"
   },
   "dependencies": {
     "@google/earthengine": "^1.7.45",

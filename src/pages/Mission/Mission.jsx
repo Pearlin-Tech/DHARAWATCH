@@ -9,6 +9,7 @@ import {
   Search, X, Route, Timer, Footprints, Shield
 } from 'lucide-react';
 import AppNavigation from '../../components/AppNavigation';
+import { useGlobalContext } from '../../context/GlobalContext';
 import './Mission.css';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -39,7 +40,7 @@ function Dropdown({ anchorRef, open, onClose, children, width = 280 }) {
     if (!open) return;
     const handler = (e) => {
       if (ref.current && !ref.current.contains(e.target) &&
-          anchorRef.current && !anchorRef.current.contains(e.target)) {
+        anchorRef.current && !anchorRef.current.contains(e.target)) {
         onClose();
       }
     };
@@ -111,18 +112,18 @@ function WatershedSelector({ value, onChange }) {
         onClick={() => setOpen(o => !o)}
         style={{ minWidth: 220, cursor: 'pointer' }}
       >
-        <div className="cb-label"><Droplets size={11}/> TARGET WATERSHED</div>
+        <div className="cb-label"><Droplets size={11} /> TARGET WATERSHED</div>
         <div className="cb-val">
           <span style={{ color: value ? '#fff' : '#6b7280', fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 160 }}>
             {value ? value.name : 'SELECT TARGET'}
           </span>
-          <ChevronDown size={13} color="#6b7280" style={{ flexShrink: 0, transition: 'transform 0.18s', transform: open ? 'rotate(180deg)' : '' }}/>
+          <ChevronDown size={13} color="#6b7280" style={{ flexShrink: 0, transition: 'transform 0.18s', transform: open ? 'rotate(180deg)' : '' }} />
         </div>
       </div>
       <Dropdown anchorRef={anchorRef} open={open} onClose={() => setOpen(false)} width={320}>
         <div style={{ padding: '10px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 5, padding: '6px 10px' }}>
-            <Search size={13} color="#6b7280"/>
+            <Search size={13} color="#6b7280" />
             <input
               ref={inputRef}
               value={q}
@@ -130,7 +131,7 @@ function WatershedSelector({ value, onChange }) {
               placeholder="Search watershed..."
               style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: '#fff', fontSize: 12, fontFamily: 'Inter, sans-serif' }}
             />
-            {q && <X size={13} color="#6b7280" style={{ cursor: 'pointer' }} onClick={() => setQ('')}/>}
+            {q && <X size={13} color="#6b7280" style={{ cursor: 'pointer' }} onClick={() => setQ('')} />}
           </div>
         </div>
         <div style={{ maxHeight: 260, overflowY: 'auto' }}>
@@ -208,7 +209,7 @@ function OriginSelector({ value, onChange }) {
         const res = await fetch('/api/mission/origins/resolve?placeId=' + encodeURIComponent(r.id));
         const data = await res.json();
         if (data && data.lat) { onChange(data); setOpen(false); setQ(''); return; }
-      } catch {}
+      } catch { }
     }
     onChange({ ...r, lat: r.lat || 22.8, lng: r.lng || 86.18 });
     setOpen(false); setQ('');
@@ -222,18 +223,18 @@ function OriginSelector({ value, onChange }) {
         onClick={() => setOpen(o => !o)}
         style={{ minWidth: 180, cursor: 'pointer' }}
       >
-        <div className="cb-label"><Target size={11}/> ORIGIN BASE</div>
+        <div className="cb-label"><Target size={11} /> ORIGIN BASE</div>
         <div className="cb-val">
           <span style={{ color: value ? '#fff' : '#6b7280', fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>
             {value ? value.name : 'SELECT ORIGIN'}
           </span>
-          <ChevronDown size={13} color="#6b7280" style={{ flexShrink: 0, transition: 'transform 0.18s', transform: open ? 'rotate(180deg)' : '' }}/>
+          <ChevronDown size={13} color="#6b7280" style={{ flexShrink: 0, transition: 'transform 0.18s', transform: open ? 'rotate(180deg)' : '' }} />
         </div>
       </div>
       <Dropdown anchorRef={anchorRef} open={open} onClose={() => setOpen(false)} width={300}>
         <div style={{ padding: '10px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 5, padding: '6px 10px' }}>
-            <Search size={13} color="#6b7280"/>
+            <Search size={13} color="#6b7280" />
             <input
               ref={inputRef}
               value={q}
@@ -241,7 +242,7 @@ function OriginSelector({ value, onChange }) {
               placeholder="City, facility or base name..."
               style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: '#fff', fontSize: 12, fontFamily: 'Inter, sans-serif' }}
             />
-            {q && <X size={13} color="#6b7280" style={{ cursor: 'pointer' }} onClick={() => setQ('')}/>}
+            {q && <X size={13} color="#6b7280" style={{ cursor: 'pointer' }} onClick={() => setQ('')} />}
           </div>
         </div>
         <div style={{ maxHeight: 240, overflowY: 'auto' }}>
@@ -284,10 +285,10 @@ function SimpleSelector({ label, icon: Icon, value, display, options, onChange }
   return (
     <>
       <div ref={anchorRef} className="config-box" onClick={() => setOpen(o => !o)} style={{ cursor: 'pointer', minWidth: 140 }}>
-        <div className="cb-label">{Icon && <Icon size={11}/>} {label}</div>
+        <div className="cb-label">{Icon && <Icon size={11} />} {label}</div>
         <div className="cb-val">
           <span style={{ fontSize: 13, fontWeight: 600 }}>{display}</span>
-          <ChevronDown size={13} color="#6b7280" style={{ flexShrink: 0, transition: 'transform 0.18s', transform: open ? 'rotate(180deg)' : '' }}/>
+          <ChevronDown size={13} color="#6b7280" style={{ flexShrink: 0, transition: 'transform 0.18s', transform: open ? 'rotate(180deg)' : '' }} />
         </div>
       </div>
       <Dropdown anchorRef={anchorRef} open={open} onClose={() => setOpen(false)} width={180}>
@@ -305,7 +306,7 @@ function SimpleSelector({ label, icon: Icon, value, display, options, onChange }
             onMouseLeave={e => e.currentTarget.style.background = opt.value === value || opt.label === display ? 'rgba(56,189,248,0.1)' : 'transparent'}
           >
             {opt.label}
-            {(opt.value === value || opt.label === display) && <Check size={11} color="#38bdf8"/>}
+            {(opt.value === value || opt.label === display) && <Check size={11} color="#38bdf8" />}
           </div>
         ))}
       </Dropdown>
@@ -338,7 +339,7 @@ function GeneratingOverlay({ stage }) {
         return (
           <div key={s} style={{ display: 'flex', alignItems: 'center', gap: 12, opacity: done || active ? 1 : 0.25, transition: 'opacity 0.3s' }}>
             <div style={{ width: 18, height: 18, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: done ? '#10b981' : active ? 'transparent' : 'rgba(255,255,255,0.05)', border: active ? '2px solid #38bdf8' : done ? 'none' : '1px solid rgba(255,255,255,0.1)' }}>
-              {done ? <Check size={10} color="#000"/> : active ? <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#38bdf8', animation: 'pulse 1s ease infinite' }}/> : null}
+              {done ? <Check size={10} color="#000" /> : active ? <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#38bdf8', animation: 'pulse 1s ease infinite' }} /> : null}
             </div>
             <span style={{ fontFamily: 'monospace', fontSize: 11, color: done ? '#10b981' : active ? '#fff' : '#4b5563', fontWeight: active ? 700 : 400 }}>{s}</span>
             {done && <span style={{ color: '#10b981', fontSize: 10, fontFamily: 'monospace' }}>✓</span>}
@@ -375,7 +376,7 @@ function ScoreBars({ score }) {
   return (
     <div style={{ display: 'flex', gap: 3 }}>
       {[...Array(5)].map((_, i) => (
-        <div key={i} style={{ width: 10, height: 4, borderRadius: 2, background: i < filled ? '#38bdf8' : 'rgba(255,255,255,0.1)' }}/>
+        <div key={i} style={{ width: 10, height: 4, borderRadius: 2, background: i < filled ? '#38bdf8' : 'rgba(255,255,255,0.1)' }} />
       ))}
     </div>
   );
@@ -445,38 +446,46 @@ export default function Mission() {
   const [activeStopId, setActiveStopId] = useState(null);
 
   const [activeTab, setActiveTab] = useState('candidate_pool');
-  const [history, setHistory] = useState([]);
 
-  // ─── Map init ─────────────────────────────────────────────────────────────
+  // Initialize Map
   useEffect(() => {
-    if (!mapsLoaded || map.current || !mapContainer.current) return;
+    if (!map.current && mapContainer.current) {
+      map.current = new maplibregl.Map({
+        container: mapContainer.current,
+        style: {
+          version: 8,
+          sources: {
+            satellite: {
+              type: 'raster',
+              tiles: ['https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}'],
+              tileSize: 256,
+              attribution: 'Google'
+            }
+          },
+          layers: [{ id: 'satellite-layer', type: 'raster', source: 'satellite', minzoom: 0, maxzoom: 22 }]
+        },
+        center: [86.18, 22.80],
+        zoom: 12,
+        attributionControl: false
+      });
 
-    map.current = new window.google.maps.Map(mapContainer.current, {
-      center: { lat: 21.8, lng: 76.5 },
-      zoom: 6,
-      mapTypeId: 'satellite',
-      disableDefaultUI: true,
-      mapId: 'DHARAWATCH_MISSION_MAP' // Required for AdvancedMarkerElement
-    });
-
-    routeLayerRef.current = new window.google.maps.Polyline({
-      map: map.current,
-      path: [],
-      strokeColor: '#38bdf8',
-      strokeOpacity: 0.85,
-      strokeWeight: 4,
-      icons: [{
-        icon: { path: window.google.maps.SymbolPath.FORWARD_CLOSED_ARROW },
-        offset: '100%',
-        repeat: '100px'
-      }]
-    });
-  }, [mapsLoaded]);
+      map.current.on('load', () => {
+        map.current.addSource('route-source', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+        map.current.addLayer({
+          id: 'route-layer',
+          type: 'line',
+          source: 'route-source',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: { 'line-color': '#38bdf8', 'line-width': 3, 'line-dasharray': [2, 2] }
+        });
+      });
+    }
+  }, []);
 
   // ─── Map markers ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (!map.current || !mapsLoaded) return;
-    
+
     // Clear old markers
     Object.values(markersRef.current).forEach(m => m.map = null);
     markersRef.current = {};
@@ -529,7 +538,7 @@ export default function Mission() {
           title: c.title
         });
       }
-      
+
       markersRef.current[c.id] = marker;
     });
 
@@ -545,7 +554,7 @@ export default function Mission() {
         box-shadow:0 0 16px rgba(245,158,11,0.5);
       `;
       el.innerText = '◎';
-      
+
       if (window.google.maps.marker && window.google.maps.marker.AdvancedMarkerElement) {
         originMarkerRef.current = new window.google.maps.marker.AdvancedMarkerElement({
           map: map.current,
@@ -707,7 +716,7 @@ export default function Mission() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...missionData, status: 'IN_PROGRESS', startedAt: new Date().toISOString() })
       });
-    } catch {}
+    } catch { }
   };
 
   // ─── Candidate toggle ──────────────────────────────────────────────────────
@@ -722,7 +731,7 @@ export default function Mission() {
   // ─── Load history ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (activeTab === 'history') {
-      fetch('/api/missions').then(r => r.json()).then(d => setHistory(Array.isArray(d) ? d : [])).catch(() => {});
+      fetch('/api/missions').then(r => r.json()).then(d => setHistory(Array.isArray(d) ? d : [])).catch(() => { });
     }
   }, [activeTab]);
 
@@ -741,11 +750,11 @@ export default function Mission() {
   // ─── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="mission-container">
-      <AppNavigation/>
+      <AppNavigation />
       <div className="mission-content">
-        <div ref={mapContainer} className="mission-map-container"/>
+        <div ref={mapContainer} className="mission-map-container" />
 
-        {missionState === 'GENERATING' && <GeneratingOverlay stage={genStage}/>}
+        {missionState === 'GENERATING' && <GeneratingOverlay stage={genStage} />}
 
         <div className="mission-ui-layer">
           {/* ── Top Panel ────────────────────────────────────── */}
@@ -756,7 +765,7 @@ export default function Mission() {
                 <div className="mh-title">
                   FIELD / MISSION INTELLIGENCE
                   <span className="mh-status-badge">
-                    <span className="mh-status-dot"/>
+                    <span className="mh-status-dot" />
                     ORBITAL GAP ANALYSIS SYNCED
                   </span>
                 </div>
@@ -768,7 +777,7 @@ export default function Mission() {
                     <div style={{ color: '#fff', fontWeight: 600 }}>CDR. A. VANCE</div>
                     <div>GEOINT SPEC // T1</div>
                   </div>
-                  <Crosshair size={18} color="#9ca3af"/>
+                  <Crosshair size={18} color="#9ca3af" />
                 </div>
               </div>
             </div>
@@ -789,7 +798,7 @@ export default function Mission() {
                       return (
                         <div key={step} className={`mode-step${completed ? ' completed' : ''}${active ? ' active' : ''}`}>
                           <div className="ms-num">0{step}</div>
-                          <div className="ms-dot"/>
+                          <div className="ms-dot" />
                           <div className="ms-label">{label}</div>
                         </div>
                       );
@@ -797,15 +806,15 @@ export default function Mission() {
                   </div>
                 </div>
                 <button className="capture-btn" onClick={() => navigate('/field')}>
-                  <Camera size={14}/> CAPTURE<br/>EVIDENCE
+                  <Camera size={14} /> CAPTURE<br />EVIDENCE
                 </button>
               </div>
             </div>
 
             {/* ── Config strip ── */}
             <div className="mission-config-strip">
-              <WatershedSelector value={target} onChange={(t) => { setTarget(t); setMissionData(null); if (missionState !== 'CONFIG') setMissionState('CONFIG'); }}/>
-              <OriginSelector value={origin} onChange={(o) => { setOrigin(o); setMissionData(null); if (missionState !== 'CONFIG') setMissionState('CONFIG'); }}/>
+              <WatershedSelector value={target} onChange={(t) => { setTarget(t); setMissionData(null); if (missionState !== 'CONFIG') setMissionState('CONFIG'); }} />
+              <OriginSelector value={origin} onChange={(o) => { setOrigin(o); setMissionData(null); if (missionState !== 'CONFIG') setMissionState('CONFIG'); }} />
 
               <SimpleSelector
                 label="FIELD WINDOW" icon={Clock}
@@ -828,12 +837,12 @@ export default function Mission() {
 
               {(missionState === 'CONFIG' || missionState === 'CANDIDATES' || missionState === 'ROUTING' || missionState === 'READY') && (
                 <button className="gen-mission-btn" onClick={handleGenerate} disabled={missionState === 'GENERATING'}>
-                  {missionState === 'CONFIG' ? (<>GENERATE MISSION <ArrowRight size={14}/></>) : (<>REPLAN MISSION <ArrowRight size={14}/></>)}
+                  {missionState === 'CONFIG' ? (<>GENERATE MISSION <ArrowRight size={14} /></>) : (<>REPLAN MISSION <ArrowRight size={14} /></>)}
                 </button>
               )}
               {missionState === 'ACTIVE' && (
                 <div style={{ marginLeft: 'auto', background: 'rgba(16,185,129,0.1)', border: '1px solid #10b981', borderRadius: 6, padding: '8px 16px', fontFamily: 'monospace', fontSize: 11, color: '#10b981', display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981', animation: 'pulse 1s infinite' }}/> MISSION IN PROGRESS
+                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981', animation: 'pulse 1s infinite' }} /> MISSION IN PROGRESS
                 </div>
               )}
             </div>
@@ -841,14 +850,14 @@ export default function Mission() {
 
           {/* ── Map controls ── */}
           <div className="map-controls">
-            <button onClick={() => { if(map.current) map.current.setZoom(map.current.getZoom() + 1); }}><ZoomIn size={16}/></button>
-            <button onClick={() => { if(map.current) map.current.setZoom(map.current.getZoom() - 1); }}><ZoomOut size={16}/></button>
+            <button onClick={() => { if (map.current) map.current.setZoom(map.current.getZoom() + 1); }}><ZoomIn size={16} /></button>
+            <button onClick={() => { if (map.current) map.current.setZoom(map.current.getZoom() - 1); }}><ZoomOut size={16} /></button>
             <button onClick={() => {
               if (missionData?.map?.center && map.current) {
                 map.current.panTo({ lat: missionData.map.center.lat, lng: missionData.map.center.lng });
                 map.current.setZoom(12);
               }
-            }}><Maximize size={16}/></button>
+            }}><Maximize size={16} /></button>
           </div>
 
           {/* ── Middle floating panels ── */}
@@ -858,7 +867,7 @@ export default function Mission() {
             {(missionState === 'READY' || missionState === 'ACTIVE') && missionData && (
               <div className="synthesis-panel">
                 <div className="syn-header">
-                  <div><Layers size={11} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }}/> MISSION SYNTHESIS</div>
+                  <div><Layers size={11} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} /> MISSION SYNTHESIS</div>
                   <div className="syn-badge">AI OPTIMIZED</div>
                 </div>
 
@@ -882,31 +891,31 @@ export default function Mission() {
                   <div style={{ background: 'rgba(0,0,0,0.25)', borderRadius: 6, padding: '8px 12px' }}>
                     <div style={{ fontFamily: 'monospace', fontSize: 8, color: '#6b7280', marginBottom: 4 }}>DRIVE DISTANCE</div>
                     <div style={{ fontFamily: 'monospace', fontSize: 15, color: '#38bdf8', fontWeight: 700 }}>
-                      <Route size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }}/>{route?.driveDistance || '—'}
+                      <Route size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} />{route?.driveDistance || '—'}
                     </div>
                   </div>
                   <div style={{ background: 'rgba(0,0,0,0.25)', borderRadius: 6, padding: '8px 12px' }}>
                     <div style={{ fontFamily: 'monospace', fontSize: 8, color: '#6b7280', marginBottom: 4 }}>DRIVE TIME</div>
                     <div style={{ fontFamily: 'monospace', fontSize: 15, color: '#38bdf8', fontWeight: 700 }}>
-                      <Timer size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }}/>{fmtMin(route?.driveDurationMinutes)}
+                      <Timer size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} />{fmtMin(route?.driveDurationMinutes)}
                     </div>
                   </div>
                   <div style={{ background: 'rgba(0,0,0,0.25)', borderRadius: 6, padding: '8px 12px' }}>
                     <div style={{ fontFamily: 'monospace', fontSize: 8, color: '#6b7280', marginBottom: 4 }}>FIELD TIME</div>
                     <div style={{ fontFamily: 'monospace', fontSize: 15, color: '#10b981', fontWeight: 700 }}>
-                      <Footprints size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }}/>{fmtMin(route?.fieldDurationMinutes)}
+                      <Footprints size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} />{fmtMin(route?.fieldDurationMinutes)}
                     </div>
                   </div>
                   <div style={{ background: 'rgba(0,0,0,0.25)', borderRadius: 6, padding: '8px 12px' }}>
                     <div style={{ fontFamily: 'monospace', fontSize: 8, color: '#6b7280', marginBottom: 4 }}>TIME BUFFER</div>
                     <div style={{ fontFamily: 'monospace', fontSize: 15, color: route?.bufferMinutes >= 0 ? '#f59e0b' : '#ef4444', fontWeight: 700 }}>
-                      <Shield size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }}/>{fmtMin(Math.max(0, route?.bufferMinutes))}
+                      <Shield size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} />{fmtMin(Math.max(0, route?.bufferMinutes))}
                     </div>
                   </div>
                 </div>
 
                 <div className="syn-footer">
-                  <CheckCircle2 size={12}/> Confidence: {summary?.confidence ?? '—'}%
+                  <CheckCircle2 size={12} /> Confidence: {summary?.confidence ?? '—'}%
                 </div>
               </div>
             )}
@@ -919,11 +928,11 @@ export default function Mission() {
                   <div className="insp-title" style={{ fontSize: 16 }}>
                     {activeCandidate.title}
                   </div>
-                  <PriBadge p={activeCandidate.priority}/>
+                  <PriBadge p={activeCandidate.priority} />
                 </div>
 
                 <div className="insp-why">
-                  <div className="iw-title">WHY VISIT? <ShieldCheck size={12}/></div>
+                  <div className="iw-title">WHY VISIT? <ShieldCheck size={12} /></div>
                   <div className="iw-desc">{activeCandidate.reason}</div>
                   {activeCandidate.gap && <div className="iw-sub" style={{ marginTop: 4 }}>Evidence: {activeCandidate.gap}</div>}
                 </div>
@@ -949,12 +958,12 @@ export default function Mission() {
                   <div className="ivd-title">EVIDENCE SCORE</div>
                   <div className="ivd-row">
                     <div className="ivd-label">RAW SCORE</div>
-                    <ScoreBars score={activeCandidate.score}/>
+                    <ScoreBars score={activeCandidate.score} />
                     <div className="ivd-val">{Math.round(activeCandidate.score)}</div>
                   </div>
                   <div className="ivd-row">
                     <div className="ivd-label">CONFIDENCE</div>
-                    <ScoreBars score={(activeCandidate.confidence || 0) * 100}/>
+                    <ScoreBars score={(activeCandidate.confidence || 0) * 100} />
                     <div className="ivd-val">{Math.round((activeCandidate.confidence || 0) * 100)}%</div>
                   </div>
                 </div>
@@ -967,7 +976,7 @@ export default function Mission() {
                     {isActiveSelected ? 'REMOVE FROM PLAN' : 'ADD TO PLAN'}
                   </button>
                   <button className="insp-btn secondary" onClick={() => navigate('/compare')}>
-                    <Layers size={13}/> VIEW SATELLITE CONTEXT
+                    <Layers size={13} /> VIEW SATELLITE CONTEXT
                   </button>
                 </div>
               </div>
@@ -986,7 +995,7 @@ export default function Mission() {
                     Candidate Pool ({candidates.length} Sites)
                   </div>
                   <div className={`mb-tab${activeTab === 'history' ? ' active' : ''}`} onClick={() => setActiveTab('history')}>
-                    <Clock size={11}/> Mission History
+                    <Clock size={11} /> Mission History
                     {history.length > 0 && <span style={{ marginLeft: 4, background: 'rgba(56,189,248,0.2)', borderRadius: 8, padding: '1px 5px', fontSize: 9 }}>{history.length}</span>}
                   </div>
                 </div>
@@ -998,24 +1007,24 @@ export default function Mission() {
                       onClick={() => exportGPX(missionData, candidates, selectedIds)}
                       disabled={selectedIds.length === 0}
                     >
-                      <Download size={13}/> Export GPX
+                      <Download size={13} /> Export GPX
                     </button>
                     <button
                       className="mbs-btn"
                       onClick={handleSave}
                       disabled={savingState === 'saving'}
                     >
-                      <Save size={13}/>
+                      <Save size={13} />
                       {savingState === 'saving' ? 'Saving...' : savingState === 'saved' ? 'Saved ✓' : savingState === 'error' ? 'Error' : 'Save Draft'}
                     </button>
                     {missionState === 'CANDIDATES' && (
                       <button className="mbs-btn primary" onClick={handleBuildRoute} disabled={selectedIds.length === 0}>
-                        <Route size={13}/> BUILD ROUTE
+                        <Route size={13} /> BUILD ROUTE
                       </button>
                     )}
                     {(missionState === 'READY') && (
                       <button className="mbs-btn primary" onClick={handleStart}>
-                        <Play size={13} fill="currentColor"/> START ACTIVE MISSION
+                        <Play size={13} fill="currentColor" /> START ACTIVE MISSION
                       </button>
                     )}
                   </div>
@@ -1040,12 +1049,12 @@ export default function Mission() {
                       >
                         <div className="msc-header">
                           <span>SITE {String(idx + 1).padStart(2, '0')}</span>
-                          <PriBadge p={c.priority}/>
+                          <PriBadge p={c.priority} />
                         </div>
                         <div className="msc-title">{c.title}</div>
                         <div className="msc-desc">{c.gap || c.reason}</div>
                         <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                          <ScoreBars score={c.score}/>
+                          <ScoreBars score={c.score} />
                           <button
                             onClick={(e) => { e.stopPropagation(); toggleStop(c.id); }}
                             style={{

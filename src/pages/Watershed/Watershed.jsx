@@ -51,6 +51,8 @@ const DEFAULT_PANELS = {
   timeline:      { open: true, pinned: false, zIndex: 10, defaultPosition: { x: '50%', y: 'calc(100% - 240px)' }, defaultSize: { width: 700, height: 140 } },
 };
 
+import { useGlobalContext } from '../../context/GlobalContext';
+
 export default function Watershed() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -60,7 +62,9 @@ export default function Watershed() {
   const abortRef = useRef(null);
   const layerMapRef = useRef({}); // maplibre layer IDs keyed by layerId
 
-  // ─── Watershed Context (single source of truth) ───────────────
+  const { selectedFeature, setSelectedFeature, activeLayers, setActiveLayers } = useGlobalContext();
+
+  // ─── Watershed Context (single source of truth for the basin) ───────────────
   const [wsCtx, setWsCtx] = useState(null);
   const [wsLoading, setWsLoading] = useState(false);
   const [wsError, setWsError] = useState(null);
@@ -78,9 +82,9 @@ export default function Watershed() {
   const [panels, setPanels] = useState(DEFAULT_PANELS);
   const [maxZ, setMaxZ] = useState(10);
 
-  // ─── Active map layers ────────────────────────────────────────
-  const [activeLayers, setActiveLayers] = useState({});     // { layerId: { opacity, tileUrl, status } }
-  const [layerLoading, setLayerLoading] = useState({});     // { layerId: bool }
+  // ─── Map layer state (holds tile URLs and opacity) ────────────
+  const [layerState, setLayerState] = useState({});     // { layerId: { opacity, tileUrl, status } }
+  const [layerLoading, setLayerLoading] = useState({}); // { layerId: bool }
 
   // ─── Search / Resolve UI ──────────────────────────────────────
   const [searchQuery, setSearchQuery] = useState('');
@@ -182,6 +186,38 @@ export default function Watershed() {
     };
   }, []);
 
+  // ─── Global Feature Synchronization ────────────────────────
+  useEffect(() => {
+    if (!selectedFeature) return;
+
+    // We only load the watershed if it doesn't match the selectedFeature's watershed, or if we don't have one yet.
+    // If selectedFeature has a watershedName, use it, else use its name.
+    const searchName = selectedFeature.watershedName || selectedFeature.name;
+
+    setWsLoading(true);
+    searchWatersheds(searchName)
+      .then(results => {
+        if (results && results.length > 0) {
+          setWsCtx(results[0]);
+          
+          if (map.current) {
+            // "use a close regional zoom, NOT India/world view." (zoom approx 13-15)
+            const targetLon = selectedFeature.longitude || results[0].centroid?.lon;
+            const targetLat = selectedFeature.latitude || results[0].centroid?.lat;
+            if (targetLon && targetLat) {
+              map.current.flyTo({ 
+                center: [targetLon, targetLat], 
+                zoom: selectedFeature.latitude ? 13 : 9, 
+                duration: 2000 
+              });
+            }
+          }
+        }
+      })
+      .catch(err => console.error('Failed to load global context:', err))
+      .finally(() => setWsLoading(false));
+  }, [selectedFeature?.id]);
+
   // Close popup on map move
   useEffect(() => {
     const m = map.current;
@@ -206,11 +242,14 @@ export default function Watershed() {
         type: 'Feature',
         geometry: wsCtx.geometry
       });
-      // Fly to boundary centroid
-      if (wsCtx.centroid) {
+      // Fly to boundary centroid or selected feature
+      const targetLon = selectedFeature?.longitude || wsCtx.centroid?.lon;
+      const targetLat = selectedFeature?.latitude || wsCtx.centroid?.lat;
+      
+      if (targetLon && targetLat) {
         map.current.flyTo({
-          center: [wsCtx.centroid.lon, wsCtx.centroid.lat],
-          zoom: wsCtx.areaKm2 > 5000 ? 7 : wsCtx.areaKm2 > 500 ? 9 : 11,
+          center: [targetLon, targetLat],
+          zoom: selectedFeature?.latitude ? 13 : (wsCtx.areaKm2 > 5000 ? 7 : wsCtx.areaKm2 > 500 ? 9 : 11),
           duration: 1500
         });
       }
@@ -309,64 +348,80 @@ export default function Watershed() {
   };
 
   // ─── Layer management ─────────────────────────────────────────
-  const toggleLayer = useCallback(async (layerId) => {
-    if (activeLayers[layerId]) {
-      // Remove from map
-      const m = map.current;
-      if (m) {
-        const mapLayerId = `ee-layer-${layerId}`;
-        if (m.getLayer(mapLayerId)) m.removeLayer(mapLayerId);
-        if (m.getSource(mapLayerId)) m.removeSource(mapLayerId);
-      }
-      setActiveLayers(prev => { const n = { ...prev }; delete n[layerId]; return n; });
-      return;
-    }
+  const toggleLayer = useCallback((layerId) => {
+    setActiveLayers(prev => ({ ...prev, [layerId]: !prev[layerId] }));
+  }, [setActiveLayers]);
 
-    if (!wsCtx) return;
+  // Sync map layers when global activeLayers changes
+  useEffect(() => {
+    if (!wsCtx || wsCtx.dataStatus === 'UNAVAILABLE') return;
 
-    setLayerLoading(prev => ({ ...prev, [layerId]: true }));
-    try {
-      const result = await getLayerTile(wsCtx.id, layerId, wsCtx.geometry);
-      if (result?.available && result.tileUrl) {
-        const m = map.current;
+    const syncLayers = async () => {
+      // Create a copy of the keys to check
+      const layersToCheck = availableLayers.map(l => l.id);
+      if (!layersToCheck.includes('boundary')) layersToCheck.push('boundary');
+      
+      for (const layerId of layersToCheck) {
+        if (layerId === 'boundary') continue; // Handled by wsCtx natively
+
+        const isActive = activeLayers[layerId];
+        const isLoaded = !!layerState[layerId];
         const mapLayerId = `ee-layer-${layerId}`;
-        if (m) {
-          if (m.getLayer(mapLayerId)) m.removeLayer(mapLayerId);
-          if (m.getSource(mapLayerId)) m.removeSource(mapLayerId);
-          m.addSource(mapLayerId, { type: 'raster', tiles: [result.tileUrl], tileSize: 256 });
-          m.addLayer({
-            id: mapLayerId,
-            type: 'raster',
-            source: mapLayerId,
-            paint: { 'raster-opacity': 0.8 }
-          }, 'ws-boundary-fill');
+
+        if (isActive && !isLoaded && !layerLoading[layerId]) {
+          setLayerLoading(prev => ({ ...prev, [layerId]: true }));
+          try {
+            const result = await getLayerTile(wsCtx.id, layerId, wsCtx.geometry);
+            if (result?.available && result.tileUrl) {
+              const m = map.current;
+              if (m) {
+                if (m.getLayer(mapLayerId)) m.removeLayer(mapLayerId);
+                if (m.getSource(mapLayerId)) m.removeSource(mapLayerId);
+                m.addSource(mapLayerId, { type: 'raster', tiles: [result.tileUrl], tileSize: 256 });
+                m.addLayer({
+                  id: mapLayerId,
+                  type: 'raster',
+                  source: mapLayerId,
+                  paint: { 'raster-opacity': 0.8 }
+                }, 'ws-boundary-fill');
+              }
+              setLayerState(prev => ({
+                ...prev,
+                [layerId]: { opacity: 0.8, tileUrl: result.tileUrl, status: 'AVAILABLE', meta: result }
+              }));
+            } else {
+              setLayerState(prev => ({
+                ...prev,
+                [layerId]: { status: result?.dataStatus || 'UNAVAILABLE', reason: result?.reason }
+              }));
+            }
+          } catch (err) {
+            setLayerState(prev => ({
+              ...prev,
+              [layerId]: { status: 'ERROR', reason: err.message }
+            }));
+          } finally {
+            setLayerLoading(prev => { const n = { ...prev }; delete n[layerId]; return n; });
+          }
+        } else if (!isActive && isLoaded) {
+          const m = map.current;
+          if (m) {
+            if (m.getLayer(mapLayerId)) m.removeLayer(mapLayerId);
+            if (m.getSource(mapLayerId)) m.removeSource(mapLayerId);
+          }
+          setLayerState(prev => { const n = { ...prev }; delete n[layerId]; return n; });
         }
-        setActiveLayers(prev => ({
-          ...prev,
-          [layerId]: { opacity: 0.8, tileUrl: result.tileUrl, status: 'AVAILABLE', meta: result }
-        }));
-      } else {
-        setActiveLayers(prev => ({
-          ...prev,
-          [layerId]: { status: result?.dataStatus || 'UNAVAILABLE', reason: result?.reason }
-        }));
       }
-    } catch (err) {
-      setActiveLayers(prev => ({
-        ...prev,
-        [layerId]: { status: 'ERROR', reason: err.message }
-      }));
-    } finally {
-      setLayerLoading(prev => { const n = { ...prev }; delete n[layerId]; return n; });
-    }
-  }, [wsCtx, activeLayers]);
+    };
+    syncLayers();
+  }, [activeLayers, availableLayers, wsCtx]);
 
   const setLayerOpacity = (layerId, opacity) => {
     const mapLayerId = `ee-layer-${layerId}`;
     if (map.current?.getLayer(mapLayerId)) {
       map.current.setPaintProperty(mapLayerId, 'raster-opacity', opacity);
     }
-    setActiveLayers(prev => ({ ...prev, [layerId]: { ...prev[layerId], opacity } }));
+    setLayerState(prev => ({ ...prev, [layerId]: { ...prev[layerId], opacity } }));
   };
 
   // ─── Timeline playback ────────────────────────────────────────
@@ -523,7 +578,7 @@ export default function Watershed() {
       const ws = await saveCustomWatershed({ name, type, geometry, source });
       setSavedWatersheds(prev => [...prev, ws]);
       // Activate this watershed
-      setWsCtx({ ...ws, centroid: computeCentroidFromGeom(geometry), dataStatus: 'AVAILABLE' });
+      setWsCtx({ ...ws, centroid: ws.centroid || computeCentroidFromGeom(geometry), dataStatus: 'AVAILABLE' });
       setBuilderMode(null);
       setDrawPolygon(null);
       setSaveNameInput('');
@@ -549,7 +604,7 @@ export default function Watershed() {
     try {
       const ws = await importWatershed({ name, geojson });
       setSavedWatersheds(prev => [...prev, ws]);
-      setWsCtx({ ...ws, centroid: computeCentroidFromGeom(ws.geometry), dataStatus: 'AVAILABLE' });
+      setWsCtx({ ...ws, centroid: ws.centroid || computeCentroidFromGeom(ws.geometry), dataStatus: 'AVAILABLE' });
       setBuilderMode(null);
       setImportText('');
       setSaveNameInput('');
@@ -709,7 +764,7 @@ export default function Watershed() {
               {savedWatersheds.length === 0 && <div style={{ padding: '8px 12px', color: '#6b7280', fontSize: '11px' }}>No saved watersheds</div>}
               {savedWatersheds.map(ws => (
                 <div key={ws.id} className="ws-saved-item" onClick={() => {
-                  setWsCtx({ ...ws, centroid: computeCentroidFromGeom(ws.geometry), dataStatus: 'AVAILABLE' });
+                  setWsCtx({ ...ws, centroid: ws.centroid || computeCentroidFromGeom(ws.geometry), dataStatus: 'AVAILABLE' });
                   setSavedOpen(false);
                 }}>
                   <span>{ws.name}</span>
@@ -975,9 +1030,11 @@ export default function Watershed() {
             <div className="layer-group-header">{group}</div>
             {layerList.map(layer => {
               const layerId = layer.id;
-              const isActive = !!activeLayers[layerId]?.tileUrl || (layerId === 'boundary' && !!wsCtx?.geometry);
+              // Check if globally active
+              const isActive = !!activeLayers[layerId] || (layerId === 'boundary' && !!wsCtx?.geometry);
               const isLoading = layerLoading[layerId];
-              const layerState = activeLayers[layerId];
+              // Local state for opacity/status
+              const currentLayerState = layerState[layerId] || {};
               const meta = LAYER_REGISTRY[layerId] || {};
               return (
                 <div key={layerId} className={`layer-toggle ${isActive ? 'active' : ''}`}>
@@ -985,13 +1042,13 @@ export default function Watershed() {
                     <div className="lt-dot" style={{ background: isActive ? meta.color || '#38bdf8' : 'transparent', borderColor: meta.color || '#38bdf8' }} />
                     <span className="layer-label">{layer.displayName || meta.displayName || layerId}</span>
                     {isLoading && <span className="ws-spinner sm" />}
-                    {layerState?.status === 'UNAVAILABLE' && <span style={{ fontSize: '9px', color: '#ef4444' }}>N/A</span>}
+                    {currentLayerState.status === 'UNAVAILABLE' && <span style={{ fontSize: '9px', color: '#ef4444' }}>N/A</span>}
                     {layer.coarseResolution && <span className="layer-tag">~9km</span>}
                   </div>
-                  {isActive && meta.hasOpacity && layerState?.tileUrl && (
+                  {isActive && meta.hasOpacity && currentLayerState.tileUrl && (
                     <input
                       type="range" min="0" max="1" step="0.05"
-                      value={layerState.opacity ?? 0.8}
+                      value={currentLayerState.opacity ?? 0.8}
                       onChange={e => setLayerOpacity(layerId, parseFloat(e.target.value))}
                       className="layer-opacity"
                     />
@@ -1026,16 +1083,7 @@ export default function Watershed() {
         <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.05)' }}>
           <button
             className="layer-reset-btn"
-            onClick={() => {
-              // Remove all EE layers from map
-              const m = map.current;
-              Object.keys(activeLayers).forEach(layerId => {
-                const mapLayerId = `ee-layer-${layerId}`;
-                if (m?.getLayer(mapLayerId)) m.removeLayer(mapLayerId);
-                if (m?.getSource(mapLayerId)) m.removeSource(mapLayerId);
-              });
-              setActiveLayers({});
-            }}
+            onClick={() => setActiveLayers({})}
           >
             RESET LAYERS
           </button>
@@ -1056,18 +1104,52 @@ export default function Watershed() {
         defaultSize={panels.intervention.defaultSize}
       >
         <div className="int-status">
-          <StatusBadge status="PENDING" />
-          <span style={{ fontFamily: 'monospace', fontSize: '10px', color: '#4b5563', marginLeft: 8 }}>NOT CONNECTED</span>
+          <StatusBadge status={selectedFeature?.watershedName?.toUpperCase().includes('SARDAR SAROVAR') ? 'ACTIVE' : 'PENDING'} />
+          <span style={{ fontFamily: 'monospace', fontSize: '10px', color: '#4b5563', marginLeft: 8 }}>
+            {selectedFeature?.watershedName?.toUpperCase().includes('SARDAR SAROVAR') ? 'CONNECTED: PUBLIC DEMO' : 'NOT CONNECTED'}
+          </span>
         </div>
-        <div className="int-empty">
-          <Activity size={14} color="#6b7280" />
-          <div style={{ marginTop: 6 }}>
-            Intervention data requires local field database integration.
+        
+        {selectedFeature?.watershedName?.toUpperCase().includes('SARDAR SAROVAR') ? (
+          <div className="int-content" style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ background: 'rgba(56,189,248,0.05)', border: '1px solid rgba(56,189,248,0.2)', padding: 12, borderRadius: 6 }}>
+              <div style={{ color: '#38bdf8', fontSize: 10, fontWeight: 700, marginBottom: 4 }}>INTERVENTION TYPE</div>
+              <div style={{ color: '#fff', fontSize: 13, fontWeight: 600 }}>MAJOR DAM & HYDROELECTRIC</div>
+              <div style={{ color: '#9ca3af', fontSize: 11, marginTop: 4 }}>Sardar Sarovar Narmada Nigam Ltd</div>
+            </div>
+            
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <div style={{ background: 'rgba(255,255,255,0.02)', padding: 8, borderRadius: 4 }}>
+                <div style={{ color: '#6b7280', fontSize: 9 }}>STATUS</div>
+                <div style={{ color: '#10b981', fontSize: 12, fontWeight: 600 }}>OPERATIONAL</div>
+              </div>
+              <div style={{ background: 'rgba(255,255,255,0.02)', padding: 8, borderRadius: 4 }}>
+                <div style={{ color: '#6b7280', fontSize: 9 }}>LAST INSP.</div>
+                <div style={{ color: '#e5e7eb', fontSize: 12 }}>2024-05-12</div>
+              </div>
+            </div>
+            
+            <div style={{ marginTop: 4 }}>
+              <div style={{ color: '#6b7280', fontSize: 10, marginBottom: 6 }}>RECENT EVIDENCE</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: 'rgba(255,255,255,0.05)', borderRadius: 4, fontSize: 11 }}>
+                <Check size={12} color="#10b981" /> Structural scan complete
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: 'rgba(255,255,255,0.05)', borderRadius: 4, fontSize: 11, marginTop: 4 }}>
+                <Check size={12} color="#10b981" /> Seasonal spillway test
+              </div>
+            </div>
           </div>
-          <div style={{ marginTop: 4, color: '#4b5563' }}>
-            Connect intervention records to enable passport view.
+        ) : (
+          <div className="int-empty">
+            <Activity size={14} color="#6b7280" />
+            <div style={{ marginTop: 6, fontWeight: 600, color: '#f87171' }}>
+              NO EVIDENCE UPLOADED
+            </div>
+            <div style={{ marginTop: 4, color: '#4b5563' }}>
+              Intervention data requires local field database integration or recent uploads.
+            </div>
           </div>
-        </div>
+        )}
         <div className="int-actions">
           <button className="int-btn" onClick={() => navigate('/field')}>
             <MapPin size={12} /> FIELD OBSERVATION
