@@ -10,8 +10,9 @@ import {
 } from 'lucide-react';
 import AppNavigation from '../../components/AppNavigation';
 import { useGlobalContext } from '../../context/GlobalContext';
+import * as maplibregl from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
 import './Mission.css';
-
 // ─── Constants ──────────────────────────────────────────────────────────────
 const WINDOW_OPTIONS = [
   { label: '1 HOUR', minutes: 60 },
@@ -484,10 +485,12 @@ export default function Mission() {
 
   // ─── Map markers ──────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!map.current || !mapsLoaded) return;
+    if (!map.current) return;
 
     // Clear old markers
-    Object.values(markersRef.current).forEach(m => m.map = null);
+    Object.values(markersRef.current).forEach(m => {
+      if (m && typeof m.remove === 'function') m.remove();
+    });
     markersRef.current = {};
 
     candidates.forEach((c, idx) => {
@@ -518,32 +521,21 @@ export default function Mission() {
       el.addEventListener('click', (e) => {
         e.stopPropagation();
         setActiveStopId(c.id);
-        map.current.panTo({ lat: c.coords[1], lng: c.coords[0] });
-        map.current.setZoom(15);
+        map.current.flyTo({ center: [c.coords[0], c.coords[1]], zoom: 15 });
       });
 
-      let marker;
-      if (window.google.maps.marker && window.google.maps.marker.AdvancedMarkerElement) {
-        marker = new window.google.maps.marker.AdvancedMarkerElement({
-          map: map.current,
-          position: { lat: c.coords[1], lng: c.coords[0] },
-          content: el,
-          title: c.title
-        });
-      } else {
-        // Fallback if advanced markers fail
-        marker = new window.google.maps.Marker({
-          map: map.current,
-          position: { lat: c.coords[1], lng: c.coords[0] },
-          title: c.title
-        });
-      }
+      const marker = new maplibregl.Marker({ element: el })
+        .setLngLat([c.coords[0], c.coords[1]])
+        .addTo(map.current);
 
       markersRef.current[c.id] = marker;
     });
 
     // Origin marker
-    if (originMarkerRef.current) { originMarkerRef.current.map = null; originMarkerRef.current = null; }
+    if (originMarkerRef.current) {
+      if (typeof originMarkerRef.current.remove === 'function') originMarkerRef.current.remove();
+      originMarkerRef.current = null;
+    }
     if (origin && origin.lat && origin.lng) {
       const el = document.createElement('div');
       el.style.cssText = `
@@ -555,41 +547,39 @@ export default function Mission() {
       `;
       el.innerText = '◎';
 
-      if (window.google.maps.marker && window.google.maps.marker.AdvancedMarkerElement) {
-        originMarkerRef.current = new window.google.maps.marker.AdvancedMarkerElement({
-          map: map.current,
-          position: { lat: origin.lat, lng: origin.lng },
-          content: el
-        });
-      } else {
-        originMarkerRef.current = new window.google.maps.Marker({
-          map: map.current,
-          position: { lat: origin.lat, lng: origin.lng },
-        });
-      }
+      originMarkerRef.current = new maplibregl.Marker({ element: el })
+        .setLngLat([origin.lng, origin.lat])
+        .addTo(map.current);
     }
   }, [candidates, selectedIds, activeStopId, origin, mapsLoaded]);
 
   // ─── Route update ─────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!map.current || !routeLayerRef.current) return;
+    if (!map.current || !map.current.getSource('route-source')) return;
 
     if ((missionState === 'READY' || missionState === 'ACTIVE') && selectedIds.length > 0) {
       let coords = [];
       if (missionData?.map?.routeGeometry?.length > 0) {
-        coords = missionData.map.routeGeometry.map(c => ({ lat: c[1], lng: c[0] }));
+        coords = missionData.map.routeGeometry;
       } else {
         // straight-line fallback
-        if (origin) coords.push({ lat: origin.lat, lng: origin.lng });
+        if (origin) coords.push([origin.lng, origin.lat]);
         selectedIds.forEach(id => {
           const c = candidates.find(x => x.id === id);
-          if (c) coords.push({ lat: c.coords[1], lng: c.coords[0] });
+          if (c) coords.push([c.coords[0], c.coords[1]]);
         });
-        if (origin) coords.push({ lat: origin.lat, lng: origin.lng });
+        if (origin) coords.push([origin.lng, origin.lat]);
       }
-      routeLayerRef.current.setPath(coords);
+      map.current.getSource('route-source').setData({
+        type: 'FeatureCollection',
+        features: [{
+          type: 'Feature',
+          geometry: { type: 'LineString', coordinates: coords },
+          properties: {}
+        }]
+      });
     } else {
-      routeLayerRef.current.setPath([]);
+      map.current.getSource('route-source').setData({ type: 'FeatureCollection', features: [] });
     }
   }, [selectedIds, candidates, missionState, missionData, origin]);
 
@@ -675,14 +665,14 @@ export default function Mission() {
       setMissionState('READY');
       setActiveTab('active_plan');
       if (map.current) {
-        const bounds = new window.google.maps.LatLngBounds();
-        if (origin) bounds.extend({ lat: origin.lat, lng: origin.lng });
+        const bounds = new maplibregl.LngLatBounds();
+        if (origin) bounds.extend([origin.lng, origin.lat]);
         selectedIds.forEach(id => {
           const c = candidates.find(x => x.id === id);
-          if (c) bounds.extend({ lat: c.coords[1], lng: c.coords[0] });
+          if (c) bounds.extend([c.coords[0], c.coords[1]]);
         });
         if (!bounds.isEmpty()) {
-          map.current.fitBounds(bounds, 100);
+          map.current.fitBounds(bounds, { padding: 100 });
         }
       }
     }, 800);
