@@ -1,4 +1,3 @@
-import { GoogleAuth } from 'google-auth-library';
 import ee from '@google/earthengine';
 import fs from 'fs';
 import path from 'path';
@@ -61,36 +60,20 @@ export async function initEE() {
   const keyPath = path.join(__dirname, 'ee-key.json');
 
   // ── Strategy 1: ee-key.json file ─────────────────────────────
+  // authenticateViaPrivateKey refreshes the OAuth token itself; a one-shot setAuthToken() expired after 1h.
   if (fs.existsSync(keyPath)) {
     try {
-      const auth = new GoogleAuth({
-        keyFile: keyPath,
-        scopes: ['https://www.googleapis.com/auth/earthengine', 'https://www.googleapis.com/auth/cloud-platform']
+      const key = JSON.parse(fs.readFileSync(keyPath, 'utf8'));
+      const ok = await new Promise((resolve) => {
+        ee.data.authenticateViaPrivateKey(key, () => {
+          ee.initialize(null, null, () => resolve(true), (err) => { console.error('[EE] Init error (key file):', err); resolve(false); });
+        }, (err) => { console.error('[EE] Auth error (key file):', err); resolve(false); });
       });
-
-      const client = await auth.getClient();
-      const token = await client.getAccessToken();
-
-      return new Promise((resolve, reject) => {
-        ee.data.setAuthToken(
-          client.credentials.client_email,
-          'Bearer',
-          token.token,
-          3600,
-          null,
-          () => {
-            ee.initialize(null, null, () => {
-              console.log('[EE] Earth Engine Initialized via ee-key.json');
-              eeInitialized = true;
-              resolve(true);
-            }, (err) => {
-              console.error('[EE] Init error (key file):', err);
-              reject(err);
-            });
-          },
-          false
-        );
-      });
+      if (ok) {
+        console.log('[EE] Earth Engine Initialized via ee-key.json');
+        eeInitialized = true;
+        return true;
+      }
     } catch (error) {
       console.warn('[EE] Key file auth failed, trying env vars:', error.message);
     }

@@ -2,7 +2,10 @@
  * DHARAWATCH — Watershed client.
  *
  * One transport, one contract: { ok:true, ... } | { ok:false, error:{ code, message } }.
- * Every analytic call is addressed by the ACTIVE CONTEXT (id and/or geometry) — never by a demo id.
+ * Every analytic call is addressed by the ACTIVE CONTEXT object (never a bare id or a demo id):
+ *   persisted contexts (hybas-…, saved-…, custom-…) are sent by id and resolved server-side,
+ *   unsaved drafts (drawn areas) are sent by geometry.
+ * Every request terminates: a timeout raises ApiError('TIMEOUT').
  */
 
 const API = '/api';
@@ -15,17 +18,20 @@ export class ApiError extends Error {
   }
 }
 
-async function call(path, { method = 'GET', body, signal } = {}) {
+async function call(path, { method = 'GET', body, signal, timeout = 30000 } = {}) {
+  const timer = AbortSignal.timeout(timeout);
+  const combined = signal ? AbortSignal.any([signal, timer]) : timer;
   let res;
   try {
     res = await fetch(`${API}${path}`, {
       method,
-      signal,
+      signal: combined,
       headers: body ? { 'Content-Type': 'application/json' } : undefined,
       body: body ? JSON.stringify(body) : undefined
     });
   } catch (e) {
-    if (e.name === 'AbortError') throw e;
+    if (signal?.aborted) throw e; // caller cancelled (context switch) — not an error to show
+    if (timer.aborted) throw new ApiError('TIMEOUT', `No response after ${Math.round(timeout / 1000)} s`, 0);
     throw new ApiError('NETWORK_ERROR', `Network error: ${e.message}`, 0);
   }
   let json = null;
@@ -37,146 +43,66 @@ async function call(path, { method = 'GET', body, signal } = {}) {
   return json;
 }
 
+/** True for ids the server can resolve to a stored / HydroBASINS geometry. */
+export const isPersistedId = (id) => /^(hybas-|saved-|custom-)/.test(id || '');
+const ref = (ctx) => (isPersistedId(ctx?.id) ? { id: ctx.id } : { geometry: ctx?.geometry });
+
 // ── search / resolution ─────────────────────────────────────────
-export async function searchGeo(q, signal) {
-  const r = await call(`/geocode/search?q=${encodeURIComponent(q)}`, { signal });
-  return { results: r.results || [], error: r.error || null };
+export async function searchGeo(q, { signal } = {}) {
+  const r = await call(`/geocode/search?q=${encodeURIComponent(q)}`, { signal, timeout: 20000 });
+  return { results: r.results || [], error: r.error || null, warning: r.warning || null };
+}
+export const resolvePoint = (lat, lon, { signal, river } = {}) => call(`/watersheds/resolve?lat=${lat}&lon=${lon}${river ? `&river=${encodeURIComponent(river)}` : ''}`, { signal, timeout: 150000 });
+export const intersectGeometry = (geometry, { signal } = {}) => call('/watersheds/intersections', { method: 'POST', body: { geometry }, signal, timeout: 150000 });
+export async function getContextById(id, { signal } = {}) {
+  return (await call(`/watersheds/${encodeURIComponent(id)}`, { signal, timeout: 90000 })).watershed;
 }
 
-/** All HydroBASINS levels containing a point (hierarchy). */
-export function resolvePoint(lat, lon, signal) {
-  return call(`/watersheds/resolve?lat=${lat}&lon=${lon}`, { signal });
+// ── demo / saved records (separate collections) ─────────────────
+export async function listDemos({ signal } = {}) {
+  return (await call('/watersheds/demos', { signal, timeout: 120000 })).demos || [];
 }
-
-/** All watersheds intersecting a drawn polygon (with overlap %). */
-export function intersectGeometry(geometry, signal) {
-  return call('/watersheds/intersections', { method: 'POST', body: { geometry }, signal });
+export async function listSaved({ signal } = {}) {
+  return (await call('/watersheds', { signal, timeout: 30000 })).watersheds || [];
 }
-
-export async function getContextById(id, signal) {
-  return (await call(`/watersheds/${encodeURIComponent(id)}`, { signal })).watershed;
-}
-
-// ── saved / demo records ────────────────────────────────────────
-export async function listSaved(signal) {
-  return (await call('/watersheds', { signal })).watersheds || [];
-}
-export async function saveContextRecord(ctx, name) {
+export async function saveContext(ctx, name) {
   const r = await call('/watersheds', {
     method: 'POST',
     body: {
-      id: ctx.id, name, geometry: ctx.geometry, source: ctx.source, level: ctx.level, parentId: ctx.parentId,
-      sourceDataset: ctx.sourceDataset, sourceFeatureId: ctx.sourceFeatureId, isCustom: ctx.isCustom, isSaved: true,
-      country: ctx.country, metadata: ctx.metadata
+      id: ctx.id, sourceId: ctx.sourceId || (isPersistedId(ctx.id) ? ctx.id : null), name, geometry: ctx.geometry,
+      source: ctx.source, level: ctx.level, parentId: ctx.parentId, sourceDataset: ctx.sourceDataset, sourceFeatureId: ctx.sourceFeatureId,
+      isCustom: ctx.isCustom, country: ctx.country, metadata: ctx.metadata, technicalName: ctx.technicalName,
+      naming: ctx.naming, river: ctx.river, riverSystem: ctx.riverSystem
     }
   });
   return r.watershed;
 }
-export async function createCustomArea(geometry, name) {
-  const r = await call('/watersheds', { method: 'POST', body: { name, geometry, isCustom: true, isSaved: false, source: 'user' } });
-  return r.watershed;
-}
-export async function patchContext(id, patch) {
-  return (await call(`/watersheds/${encodeURIComponent(id)}`, { method: 'PATCH', body: patch })).watershed;
-}
-export function deleteContext(id) {
-  return call(`/watersheds/${encodeURIComponent(id)}`, { method: 'DELETE' });
-}
+export const deleteSaved = (id) => call(`/watersheds/${encodeURIComponent(id)}`, { method: 'DELETE' });
 export async function importGeoJSON(name, geojson) {
   return (await call('/watersheds/import', { method: 'POST', body: { name, geojson } })).watershed;
 }
 
-// ── geometry-first analytics (id resolved server-side; geometry sent only when no persisted id) ──
-// Only treat IDs starting with 'hybas-' or 'custom-' as reliable server-side keys.
-// Wikidata (wd-*), Overpass, or geocoder IDs are NOT valid for EE analytics.
-const isServerSideId = (id) => id && (id.startsWith('hybas-') || id.startsWith('custom-'));
-const ref = (ctx) => {
-  if (isServerSideId(ctx?.id)) return { id: ctx.id };
-  if (ctx?.geometry) return { geometry: ctx.geometry };
-  if (ctx?.id) return { id: ctx.id }; // last resort — let server handle error gracefully
-  return {};
-};
+// ── analytics (context-addressed) ───────────────────────────────
+const analysis = (path, timeout) => (ctx, { signal, refresh } = {}) =>
+  call(`/analysis/${path}`, { method: 'POST', body: { ...ref(ctx), refresh: !!refresh }, signal, timeout });
 
+export const getFingerprint = analysis('fingerprint', 150000);
+export const getTimeline = analysis('timeline', 150000);
+export const getTimelineIndices = analysis('timeline-indices', 180000);
+export const getAttention = analysis('attention', 180000);
+export const getLayerTile = (ctx, layerId, { signal, refresh } = {}) =>
+  call('/analysis/layers', { method: 'POST', body: { ...ref(ctx), layerId, refresh: !!refresh }, signal, timeout: 120000 });
 
-// New contract: getFingerprint(ctx, signal, refresh)
-// Compat: Watershed.jsx calls getFingerprint(id, geometry, signal) — handle both
-function _makeCtx(idOrCtx, geometry) {
-  if (idOrCtx && typeof idOrCtx === 'object') return idOrCtx; // already a ctx
-  return { id: idOrCtx || undefined, geometry: geometry || undefined };
-}
-export const getFingerprint = (idOrCtx, geometryOrSignal, signalOrRefresh, refresh) => {
-  const isOldSig = typeof idOrCtx === 'string' || (idOrCtx === null || idOrCtx === undefined);
-  if (isOldSig) {
-    const ctx = _makeCtx(idOrCtx, geometryOrSignal);
-    return call('/analysis/fingerprint', { method: 'POST', body: { ...ref(ctx), refresh }, signal: signalOrRefresh });
-  }
-  return call('/analysis/fingerprint', { method: 'POST', body: { ...ref(idOrCtx), refresh: signalOrRefresh }, signal: geometryOrSignal });
-};
-export const getTimeline = (idOrCtx, geometryOrSignal, signalOrRefresh, refresh) => {
-  const isOldSig = typeof idOrCtx === 'string' || (idOrCtx === null || idOrCtx === undefined);
-  if (isOldSig) {
-    const ctx = _makeCtx(idOrCtx, geometryOrSignal);
-    return call('/analysis/timeline', { method: 'POST', body: { ...ref(ctx), refresh }, signal: signalOrRefresh });
-  }
-  return call('/analysis/timeline', { method: 'POST', body: { ...ref(idOrCtx), refresh: signalOrRefresh }, signal: geometryOrSignal });
-};
-export const getAttention = (idOrCtx, geometryOrSignal, signalOrRefresh, refresh) => {
-  const isOldSig = typeof idOrCtx === 'string' || (idOrCtx === null || idOrCtx === undefined);
-  if (isOldSig) {
-    const ctx = _makeCtx(idOrCtx, geometryOrSignal);
-    return call('/analysis/attention', { method: 'POST', body: { ...ref(ctx), refresh }, signal: signalOrRefresh });
-  }
-  return call('/analysis/attention', { method: 'POST', body: { ...ref(idOrCtx), refresh: signalOrRefresh }, signal: geometryOrSignal });
-};
-export const getLayerTile = (ctx, layerId, signal, refresh) => call('/analysis/layers', { method: 'POST', body: { ...ref(ctx), layerId, refresh }, signal });
+// ── watershed intelligence (detail panel) ───────────────────────
+const ctxCall = (suffix, method, timeout) => (ctx, { signal } = {}) => isPersistedId(ctx?.id)
+  ? call(`/watersheds/${encodeURIComponent(ctx.id)}/${suffix}`, { method, signal, timeout })
+  : call(`/watersheds-${suffix}`, { method: 'POST', body: { geometry: ctx.geometry, name: ctx.name }, signal, timeout });
 
-// ── compatibility aliases for Watershed.jsx (old names → new implementations) ──
+export const getIntel = ctxCall('intel', 'GET', 150000);
+export const getMedia = ctxCall('media', 'GET', 60000);
+export const getBrief = ctxCall('brief', 'POST', 280000);
 
-/** @deprecated use listSaved() */
-export async function listSavedWatersheds(signal) {
-  return listSaved(signal);
-}
-
-/** @deprecated use searchGeo() */
-export async function searchWatersheds(q, signal) {
-  const r = await searchGeo(q, signal);
-  return r.results || [];
-}
-
-/** @deprecated use searchGeo() */
-export async function searchPlaces(q, signal) {
-  const r = await searchGeo(q, signal);
-  return r.results || [];
-}
-
-/** @deprecated use resolvePoint() — returns candidates array */
-export async function resolveWatershed(lat, lon, signal) {
-  const r = await resolvePoint(lat, lon, signal);
-  // resolvePoint returns { watersheds: [...] } — return first candidate as context object
-  const candidates = r?.watersheds || r?.candidates || [];
-  if (candidates.length === 0) throw new Error('No watershed found at this location');
-  // Return the best match (highest level / most specific)
-  const best = candidates[candidates.length - 1];
-  return { ...best, dataStatus: 'AVAILABLE' };
-}
-
-/** @deprecated use createCustomArea() */
-export async function saveCustomWatershed({ name, type, geometry, source, metadata } = {}) {
-  return createCustomArea(geometry, name);
-}
-
-/** @deprecated use importGeoJSON() */
-export async function importWatershed({ name, geojson } = {}) {
-  return importGeoJSON(name, geojson);
-}
-
-/** @deprecated use deleteContext() */
-export function deleteWatershed(id) {
-  return deleteContext(id);
-}
-
-/** @deprecated layers are now always WATERSHED_LAYERS from layerRegistry */
-export async function getAvailableLayers(id, signal) {
-  // The layer registry is the source of truth; return an empty "all available" signal
-  return { available: [] };
+export async function listFieldObservations({ signal } = {}) {
+  const r = await call('/field', { signal, timeout: 20000 });
+  return r.data || r.observations || [];
 }

@@ -197,7 +197,7 @@ export default function InterventionEvidenceReview() {
     }
   }, []);
 
-  // ─── 4. Analyze Action Handler ────────────────────────────────────────────
+  // ─── 4. Analyze Action Handler ────────────────────────────────────
   const handleAnalyze = async () => {
     if (!selectedInterventionId) return;
     setAnalyzing(true);

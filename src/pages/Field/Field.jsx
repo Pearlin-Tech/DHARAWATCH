@@ -21,12 +21,13 @@ async function fieldApi(path, opts = {}) {
   return json.data;
 }
 
-async function uploadPhoto(file, missionId, stopId, watershedId) {
+async function uploadPhoto(file, missionId, stopId, watershedId, watershedName) {
   const fd = new FormData();
   fd.append('photo', file);
   if (missionId) fd.append('missionId', missionId);
   if (stopId) fd.append('stopId', stopId);
   if (watershedId) fd.append('watershedId', watershedId);
+  if (watershedName) fd.append('watershedName', watershedName);
   const res = await fetch(`${API}/field/upload`, { method: 'POST', body: fd });
   const json = await res.json();
   if (!json.success) throw new Error(json.error?.message || 'Upload failed');
@@ -271,7 +272,7 @@ export default function Field() {
     setPhotoUrl(localUrl);
 
     try {
-      const result = await uploadPhoto(file, navCtx.missionId, navCtx.stopId, navCtx.watershedId);
+      const result = await uploadPhoto(file, navCtx.missionId, navCtx.stopId, navCtx.watershedId, navCtx.watershedName);
       setUploadState('done');
       setPhotoUrl(`${API}/field/${result.observationId}/photo`);
 
@@ -491,6 +492,12 @@ export default function Field() {
             <div className="fs-pill active">
               <span style={{ width: 6, height: 6, background: '#38bdf8', borderRadius: '50%' }}></span>
               LINKED: {navCtx.missionId}{navCtx.stopId ? ` / STOP ${navCtx.stopId}` : ''}
+            </div>
+          )}
+          {navCtx.watershedId && (
+            <div className="fs-pill active" title={navCtx.watershedId}>
+              <span style={{ width: 6, height: 6, background: '#38bdf8', borderRadius: '50%' }}></span>
+              WATERSHED: {navCtx.watershedName || navCtx.watershedId}
             </div>
           )}
           {obs && <div className="fs-pill" style={{ color: '#10b981' }}>OBS: {obs.id.toUpperCase()}</div>}

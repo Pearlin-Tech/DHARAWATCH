@@ -10,12 +10,7 @@ export function GlobalProvider({ children }) {
   // Watershed page manages its own active context via URL params and its own state.
   // GlobalContext does NOT force a default watershed — that caused the Sardar Sarovar bug.
   const [selectedFeature, setSelectedFeature] = useState(null);
-  const [activeLayers, setActiveLayers] = useState({
-    boundary: true,
-    ndvi: true,
-    ndwi: true,
-    true_color: true
-  });
+  // Map layer state lives in the Watershed page (useMapLayers + shared/layerRegistry.js) — one source of truth.
 
   const setFeature = (feature) => {
     setSelectedFeature(feature);
@@ -30,9 +25,7 @@ export function GlobalProvider({ children }) {
     <GlobalContext.Provider value={{
       selectedFeature,
       setSelectedFeature: setFeature,
-      defaultFeature: null,
-      activeLayers,
-      setActiveLayers
+      defaultFeature: null
     }}>
       {children}
     </GlobalContext.Provider>

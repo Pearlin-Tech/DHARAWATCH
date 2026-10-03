@@ -215,9 +215,9 @@ export function parseCoordinateQuery(q) {
 function classifyDescription(desc = '') {
   const d = desc.toLowerCase();
   if (/drainage basin|river basin|watershed|catchment/.test(d)) return 'WATERSHED_FEATURE';
-  if (/\briver\b|\bstream\b|\bcreek\b|\bcanal\b|\btributary\b/.test(d)) return 'RIVER';
+  if (/\bdam\b|barrage|weir/.test(d)) return 'DAM'; // before RIVER: "gravity dam on the Narmada River"
   if (/reservoir|\blake\b|\bsea\b|\bbay\b|\bwetland\b/.test(d)) return 'WATER_BODY';
-  if (/\bdam\b|barrage|weir/.test(d)) return 'DAM';
+  if (/\briver\b|\bstream\b|\bcreek\b|\bcanal\b|\btributary\b/.test(d)) return 'RIVER';
   if (/sovereign state|\bcountry\b/.test(d)) return 'COUNTRY';
   if (/state of|province|region|district|county|department|territory/.test(d)) return 'REGION';
   if (/\bcity\b|\btown\b|metropolis|capital/.test(d)) return 'CITY';
@@ -292,7 +292,9 @@ export async function searchPlaces(query) {
       const dup = wd.some(w => w.name.toLowerCase() === r.name.toLowerCase() && Math.abs(w.lat - r.lat) < 1 && Math.abs(w.lon - r.lon) < 1);
       if (!dup) merged.push(r);
     }
-    results = merged;
+    // hydrological features first (stable within each group) — a watershed tool should not lead with a namesake village
+    const HYDRO = new Set(['WATERSHED_FEATURE', 'RIVER', 'WATER_BODY', 'DAM']);
+    results = merged.map((r, i) => ({ r, i })).sort((a, b) => (HYDRO.has(b.r.type) - HYDRO.has(a.r.type)) || a.i - b.i).map(x => x.r);
     if (nomRes.status === 'rejected' && wdRes.status === 'rejected') throw nomRes.reason;
     const v = { results };
     if (results.length) searchCache.set(ck, { t: Date.now(), v });
