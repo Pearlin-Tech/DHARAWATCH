@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useGoogleMaps } from '../../hooks/useGoogleMaps';
 import {
   Crosshair, Camera, Droplets, Clock, Target, Car,
@@ -438,7 +438,13 @@ export default function Mission() {
   const routeLayerRef = useRef(null);
 
   // Form state — typed values
-  const [target, setTarget] = useState(null);
+  // A watershed handed over from the Watershed page (active context) becomes the mission target.
+  const location = useLocation();
+  const [target, setTarget] = useState(() => {
+    const w = location.state?.watershed;
+    if (!w?.id || !w.centroid) return null;
+    return { id: w.id, name: w.name, type: 'WATERSHED_CONTEXT', centroid: { lat: w.centroid.lat, lng: w.centroid.lon ?? w.centroid.lng }, lat: w.centroid.lat, lon: w.centroid.lon ?? w.centroid.lng, areaKm2: w.areaKm2, level: w.level, source: w.source };
+  });
   const [origin, setOrigin] = useState(null);
   const [windowOpt, setWindowOpt] = useState(WINDOW_OPTIONS[4]);
   const [budget, setBudget] = useState(6);

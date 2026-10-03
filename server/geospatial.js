@@ -11,7 +11,7 @@
 import ee from '@google/earthengine';
 import crypto from 'crypto';
 import { validateGeometry, geometryMetrics, geometryKey } from '../src/shared/geo.js';
-import { WATERSHED_LAYERS } from '../src/shared/layerRegistry.js';
+import { WATERSHED_LAYERS, DW_CLASSES } from '../src/shared/layerRegistry.js';
 
 // ─── errors ───────────────────────────────────────────────────────
 export class GeoError extends Error {
@@ -58,9 +58,9 @@ export function evalEE(obj, timeoutMs = 90000) {
 // ─── cache ────────────────────────────────────────────────────────
 const cache = new Map();
 const TTL = 15 * 60 * 1000;
-function cget(k) { const e = cache.get(k); if (!e) return null; if (Date.now() - e.t > TTL) { cache.delete(k); return null; } return e.v; }
+export function cget(k) { const e = cache.get(k); if (!e) return null; if (Date.now() - e.t > TTL) { cache.delete(k); return null; } return e.v; }
 function cset(k, v) { cache.set(k, { t: Date.now(), v }); return v; }
-async function memo(k, fn) {
+export async function memo(k, fn) {
   const hit = cget(k);
   if (hit) return hit;
   // de-duplicate in-flight identical requests
@@ -85,7 +85,7 @@ let store = null;
 export function setStore(s) { store = s; }
 
 // ─── HydroBASINS ──────────────────────────────────────────────────
-const basinsFC = (level) => ee.FeatureCollection(`WWF/HydroSHEDS/v1/Basins/hybas_${level}`);
+export const basinsFC = (level) => ee.FeatureCollection(`WWF/HydroSHEDS/v1/Basins/hybas_${level}`);
 // simplification tolerance (metres) per level — keeps payloads small without visibly moving boundaries
 const SIMPLIFY = { 1: 8000, 2: 5000, 3: 3000, 4: 2000, 5: 1000, 6: 400, 7: 150, 8: 60, 9: 30, 10: 20, 11: 10, 12: 10 };
 
@@ -109,6 +109,8 @@ function normalizePolygonal(g) {
   return polys.length === 1 ? { type: 'Polygon', coordinates: polys[0] } : { type: 'MultiPolygon', coordinates: polys };
 }
 
+const technicalName = (level, pfaf) => `HydroBASIN L${level} · ${pfaf}`;
+
 function featureToContext(f, level) {
   const p = f.properties || {};
   const geom = normalizePolygonal(f.geometry);
@@ -120,8 +122,10 @@ function featureToContext(f, level) {
     id: `hybas-${hid}`,
     source: 'hydrosheds',
     type: 'watershed',
-    name: `HydroBASIN L${level} · ${p.PFAF_ID ?? hid}`,
-    displayName: `HydroBASINS level ${level} · Pfafstetter ${p.PFAF_ID ?? hid}`,
+    name: technicalName(level, p.PFAF_ID ?? hid),
+    displayName: technicalName(level, p.PFAF_ID ?? hid),
+    technicalName: technicalName(level, p.PFAF_ID ?? hid),
+    naming: { status: 'PENDING', method: null },
     geometry: geom,
     bbox: m.bbox,
     center: m.centroid ? [m.centroid.lon, m.centroid.lat] : null,
@@ -136,7 +140,7 @@ function featureToContext(f, level) {
     isSaved: false,
     metadata: {
       PFAF_ID: p.PFAF_ID, SUB_AREA_KM2: p.SUB_AREA, UP_AREA_KM2: p.UP_AREA,
-      MAIN_BAS: p.MAIN_BAS, ENDO: p.ENDORHEIC, COAST: p.COAST, ORDER: p.ORDER
+      MAIN_BAS: p.MAIN_BAS, ENDO: p.ENDO ?? p.ENDORHEIC, COAST: p.COAST, ORDER: p.ORDER, NEXT_DOWN: p.NEXT_DOWN
     }
   };
 }
@@ -178,6 +182,7 @@ export async function resolvePoint(lat, lon, { levels = [3, 4, 5, 6, 7, 8] } = {
       dedup.push(c);
     }
     linkHierarchy(dedup);
+    await nameBasins(dedup);
     return { candidates: dedup, failedLevels: failed.map(f => ({ level: f.level, error: f._error })) };
   });
 }
@@ -189,6 +194,7 @@ export function recommendedLevelFor(areaKm2) {
 }
 
 /** Real polygon → intersecting watersheds with overlap % (hierarchy aware). */
+const INTERSECT_LIMIT = 100;
 export async function intersectPolygon(geometry) {
   assertEE();
   const v = validateGeometry(geometry);
@@ -203,6 +209,7 @@ export async function intersectPolygon(geometry) {
     const a = drawn.areaKm2;
     const levels = a > 1e6 ? [2, 3, 4] : a > 1e5 ? [3, 4, 5, 6] : a > 1e4 ? [4, 5, 6, 7] : a > 1e3 ? [5, 6, 7, 8] : [5, 6, 7, 8, 9];
     const poly = ee.Geometry(v.geometry);
+    const truncated = [];
     const per = await Promise.all(levels.map(async (L) => {
       try {
         const col = basinsFC(L).filterBounds(poly)
@@ -212,8 +219,9 @@ export async function intersectPolygon(geometry) {
             return ee.Feature(g.simplify(SIMPLIFY[L] || 100), ft.toDictionary()).set('overlap_km2', inter);
           })
           .sort('overlap_km2', false)
-          .limit(12);
+          .limit(INTERSECT_LIMIT);
         const data = await evalEE(col, 90000);
+        if ((data.features || []).length >= INTERSECT_LIMIT) truncated.push(L);
         return (data.features || []).map(f => {
           const ctx = featureToContext(f, L);
           if (!ctx) return null;
@@ -229,9 +237,10 @@ export async function intersectPolygon(geometry) {
       }
     }));
     const candidates = per.flat().sort((x, y) => (x.level - y.level) || (y.overlapPercent - x.overlapPercent));
+    await nameBasins(candidates);
     // recommended: finest basin that still contains ≥90% of drawn area
     const containing = candidates.filter(c => c.overlapPercent >= 90).sort((x, y) => y.level - x.level)[0];
-    return { drawn, candidates, recommendedId: containing?.id || null };
+    return { drawn, candidates, recommendedId: containing?.id || null, truncatedLevels: truncated, perLevelLimit: INTERSECT_LIMIT };
   });
 }
 
@@ -247,6 +256,93 @@ export async function countriesFor(geometry) {
   } catch (_) { return []; }
 }
 
+
+// ─── Watershed naming (dataset-derived, never invented) ───────────
+// Priority: HydroSHEDS river network BAS_NAME / BB_NAME of the reach draining the basin
+// (authoritative dataset attribute) → technical HydroBASIN id. The nearest place name is
+// returned separately as `nearPlace` and is never used as the watershed name.
+export const RIVERS = 'WWF/HydroSHEDS/v1/FreeFlowingRivers';
+
+/**
+ * Name one HydroBASINS context in place. Uses its (simplified) geometry and UP_AREA:
+ *   reaches with UPLAND_SKM ≥ 30% of the basin's upstream area are filtered first (cheap),
+ *   then the reach with the largest upstream area inside the basin is its outlet river.
+ */
+export async function nameBasin(ctx) {
+  if (!ctx || ctx.isCustom || !/^hybas-/.test(ctx.id || '')) return ctx;
+  const md = ctx.metadata || {};
+  const up = Number(md.UP_AREA_KM2) || ctx.areaKm2;
+  const sub = Number(md.SUB_AREA_KM2) || ctx.areaKm2;
+  try {
+    const n = await memo(`name:${ctx.id}`, async () => {
+      const g = ee.Geometry(ctx.geometry);
+      const fc = ee.FeatureCollection(RIVERS).filter(ee.Filter.gte('UPLAND_SKM', up * 0.3)).filterBounds(g)
+        .sort('UPLAND_SKM', false).limit(1);
+      const top = await evalEE(fc.toList(1).map(f => ee.Feature(f).toDictionary(['BAS_NAME', 'BB_NAME', 'UPLAND_SKM', 'RIV_ORD'])), 45000);
+      let r = top?.[0] || null;
+      let others = [];
+      if (!r || (r.UPLAND_SKM || 0) < up * 0.6) {
+        // multi-river unit (e.g. coastal HydroBASINS): list the largest named river systems inside
+        const many = ee.FeatureCollection(RIVERS).filter(ee.Filter.gte('UPLAND_SKM', Math.max(up * 0.03, 500))).filterBounds(g)
+          .filter(ee.Filter.neq('BAS_NAME', '')).sort('UPLAND_SKM', false);
+        // largest river systems first (distinct keeps first occurrence)
+        others = (await evalEE(many.aggregate_array('BAS_NAME').distinct().slice(0, 6), 45000)) || [];
+      }
+      return { top: r, others };
+    });
+    const basName = (n.top?.BAS_NAME || '').trim().replace(/\s+basin$/i, ''); // dataset sometimes stores "Tapti Basin"
+    const bbName = (n.top?.BB_NAME || '').trim();
+    const dominant = n.top && (n.top.UPLAND_SKM || 0) >= up * 0.6 && basName;
+    const isOutlet = String(md.MAIN_BAS) === String(ctx.sourceFeatureId);
+    const whole = dominant && isOutlet && sub >= up * 0.8;
+    let name, scope;
+    if (whole) { name = `${basName} Basin`; scope = 'WHOLE_BASIN'; }
+    else if (dominant) { name = `${basName} Basin · L${ctx.level} sub-basin`; scope = 'PART_OF_BASIN'; }
+    else if (n.others.length) { name = `${n.others.slice(0, 3).map(o => String(o).replace(/\s+basin$/i, '')).join(' · ')} drainage`; scope = 'MULTI_RIVER'; }
+    else { name = ctx.technicalName || ctx.name; scope = 'UNNAMED'; }
+    ctx.name = name;
+    ctx.displayName = name;
+    ctx.river = dominant ? (bbName || basName) : null;
+    ctx.riverSystem = dominant ? basName : null;
+    ctx.naming = {
+      status: scope === 'UNNAMED' ? 'NO_NAME_IN_DATASET' : 'RESOLVED', scope,
+      method: scope === 'UNNAMED' ? 'HydroBASINS identifier (no named river reach found)' : 'HydroSHEDS river network attribute BAS_NAME of the basin outlet reach',
+      dataset: RIVERS, outletUplandKm2: n.top?.UPLAND_SKM ? Math.round(n.top.UPLAND_SKM) : null,
+      riversInside: n.others.length ? n.others : undefined
+    };
+  } catch (e) {
+    ctx.naming = { status: 'LOOKUP_FAILED', method: null, error: e.message };
+  }
+  return ctx;
+}
+/**
+ * A searched river's reference point is often its mouth (open water, outside every basin polygon).
+ * Anchor it to a HydroSHEDS reach whose BAS_NAME / BB_NAME equals the river name within `km` —
+ * a dataset match, never "the nearest polygon". Returns null when no such reach exists.
+ */
+export async function riverAnchor(lat, lon, riverName, km = 50) {
+  assertEE();
+  const n = String(riverName || '').replace(/\b(river|basin|watershed|the|rio|río)\b/gi, '').replace(/\s+/g, ' ').trim();
+  if (!n) return null;
+  const title = n.split(' ').map(w => w[0].toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+  const variants = [...new Set([n, title, n.toUpperCase()])];
+  return memo(`anchor:${lat.toFixed(4)}:${lon.toFixed(4)}:${title}:${km}`, async () => {
+    const pt = ee.Geometry.Point([lon, lat]);
+    const fc = ee.FeatureCollection(RIVERS).filterBounds(pt.buffer(km * 1000))
+      .filter(ee.Filter.or(ee.Filter.inList('BAS_NAME', variants), ee.Filter.inList('BB_NAME', variants)))
+      .sort('UPLAND_SKM', false).limit(1);
+    const r = await evalEE(fc.toList(1).map(f => {
+      const g = ee.Feature(f).geometry();
+      return ee.Dictionary({ c: g.centroid(100).coordinates(), d: g.distance(pt, 100), b: ee.Feature(f).get('BAS_NAME'), up: ee.Feature(f).get('UPLAND_SKM') });
+    }), 45000);
+    const hit = r?.[0];
+    if (!hit) return null;
+    return { lon: hit.c[0], lat: hit.c[1], river: hit.b, distanceKm: Math.round(hit.d / 100) / 10, uplandKm2: Math.round(hit.up), dataset: RIVERS };
+  });
+}
+
+export const nameBasins = (list) => Promise.all(list.map(c => nameBasin(c)));
+
 /** Load a HydroBASINS watershed by id (hybas-…). */
 export async function getBasinById(id) {
   assertEE();
@@ -261,7 +357,8 @@ export async function getBasinById(id) {
     if (!f) throw new GeoError('NO_WATERSHED_FOUND', `HydroBASINS feature ${id} not found at level ${L}`, 404);
     const ctx = featureToContext(f, L);
     if (!ctx) throw new GeoError('INVALID_GEOMETRY', 'Basin geometry invalid', 500);
-    ctx.country = (await countriesFor({ type: 'Point', coordinates: ctx.center })).join(' / ') || null;
+    const [countries] = await Promise.all([countriesFor({ type: 'Point', coordinates: ctx.center }), nameBasin(ctx)]);
+    ctx.country = countries.join(' / ') || null;
     return ctx;
   });
 }
@@ -274,7 +371,8 @@ export async function geometryRef({ id, geometry } = {}) {
     const v = validateGeometry(geometry);
     if (!v.ok) throw new GeoError('INVALID_GEOMETRY', v.message, 400);
     const m = geometryMetrics(v.geometry);
-    return { aoi: ee.Geometry(v.geometry), key: `g:${geometryKey(v.geometry)}`, areaKm2: m.areaKm2, kind: v.geometry.type === 'Point' ? 'point' : 'geometry', label: 'Drawn / supplied geometry' };
+    const g = ee.Geometry(v.geometry);
+    return { aoi: g, aoiSimple: g, key: `g:${geometryKey(v.geometry)}`, areaKm2: m.areaKm2, kind: v.geometry.type === 'Point' ? 'point' : 'geometry', label: 'Drawn / supplied geometry' };
   }
   if (id && /^hybas-/.test(id)) {
     const L = levelOfHybasId(id);
@@ -286,13 +384,16 @@ export async function geometryRef({ id, geometry } = {}) {
       if (!a || !a.length) throw new GeoError('NO_WATERSHED_FOUND', `HydroBASINS feature ${id} not found`, 404);
       return a[0];
     });
-    return { aoi: filtered.geometry(), key: id, areaKm2: area, kind: 'hydrosheds', label: 'Active HydroSHEDS watershed' };
+    // simplified copy (already fetched for the map boundary) for cheap metadata filtering on huge basins
+    const simple = await getBasinById(id).catch(() => null);
+    return { aoi: filtered.geometry(), aoiSimple: simple?.geometry ? ee.Geometry(simple.geometry) : filtered.geometry(), key: id, areaKm2: area, kind: 'hydrosheds', label: 'Active HydroSHEDS watershed' };
   }
   if (id && store) {
     const row = await store.getRow('watersheds', id).catch(() => null);
     if (row?.geometry) {
       const m = geometryMetrics(row.geometry);
-      return { aoi: ee.Geometry(row.geometry), key: `g:${geometryKey(row.geometry)}`, areaKm2: m.areaKm2, kind: row.isCustom ? 'custom' : 'saved', label: row.isCustom ? 'Custom analysis area' : 'Saved watershed' };
+      const g = ee.Geometry(row.geometry);
+      return { aoi: g, aoiSimple: g, key: `g:${geometryKey(row.geometry)}`, areaKm2: m.areaKm2, kind: row.isCustom ? 'custom' : 'saved', label: row.isCustom ? 'Custom analysis area' : 'Saved watershed' };
     }
   }
   throw new GeoError('NO_WATERSHED_FOUND', id ? `Context ${id} could not be resolved to a geometry` : 'Either id or geometry is required', id ? 404 : 400);
@@ -305,7 +406,9 @@ function scaleFor(areaKm2) {
 
 // ─── Sentinel-2 helpers ───────────────────────────────────────────
 const S2 = 'COPERNICUS/S2_SR_HARMONIZED';
+const S2_LABEL = 'Sentinel-2 SR Harmonized';
 function maskS2(image) {
+  // SCL: 1 saturated, 3 cloud shadow, 8/9 cloud medium/high, 10 cirrus
   const scl = image.select('SCL');
   const mask = scl.neq(3).and(scl.neq(8)).and(scl.neq(9)).and(scl.neq(10)).and(scl.neq(1));
   return image.updateMask(mask);
@@ -313,169 +416,183 @@ function maskS2(image) {
 const s2Col = (aoi, start, end, maxCloud = 40) =>
   ee.ImageCollection(S2).filterBounds(aoi).filterDate(start, end).filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', maxCloud));
 
+/** The three Sentinel-2 indices, computed identically for map tiles, fingerprint, timeline and attention. */
+const INDEX_BANDS = { ndvi: ['B8', 'B4'], ndwi: ['B3', 'B8'], ndmi: ['B8', 'B11'] };
+const indexImage = (img) => ee.Image.cat(Object.entries(INDEX_BANDS).map(([k, b]) => img.normalizedDifference(b).rename(k)));
+const INDEX_META = {
+  ndvi: { label: 'NDVI', name: 'Vegetation', formula: '(B8 − B4)/(B8 + B4)', nativeResolution: '10 m' },
+  ndwi: { label: 'NDWI', name: 'Surface water', formula: '(B3 − B8)/(B3 + B8)', nativeResolution: '10 m' },
+  ndmi: { label: 'NDMI', name: 'Vegetation moisture', formula: '(B8 − B11)/(B8 + B11)', nativeResolution: '20 m' }
+};
+
 const isoDay = (d) => d.toISOString().slice(0, 10);
 const daysAgo = (n, from = new Date()) => new Date(from.getTime() - n * 86400000);
+const round = (v, d = 3) => (v == null || !Number.isFinite(v) ? null : Math.round(v * 10 ** d) / 10 ** d);
+const isTimeout = (e) => /timed out/i.test(e?.message || '');
 
 async function windowStats(ref, start, end) {
   const k = `wstats:${ref.key}:${start}:${end}`;
   return memo(k, async () => {
     const col = s2Col(ref.aoi, start, end, 40);
-    const n = await evalEE(col.size(), 45000);
+    const n = await evalEE(col.size(), 60000);
     if (!n) return { n: 0, start, end };
     const comp = col.map(maskS2).median();
-    const idx = ee.Image.cat([
-      comp.normalizedDifference(['B8', 'B4']).rename('ndvi'),
-      comp.normalizedDifference(['B3', 'B8']).rename('ndwi')
-    ]);
     const scale = scaleFor(ref.areaKm2);
-    const vals = await evalEE(idx.reduceRegion({
+    const vals = await evalEE(indexImage(comp).reduceRegion({
       reducer: ee.Reducer.mean(), geometry: ref.aoi, scale, maxPixels: 1e9, bestEffort: true, tileScale: 4
-    }), 90000);
-    return { n, start, end, scale, ndvi: vals?.ndvi ?? null, ndwi: vals?.ndwi ?? null };
+    }), 100000);
+    return { n, start, end, scale, ndvi: vals?.ndvi ?? null, ndwi: vals?.ndwi ?? null, ndmi: vals?.ndmi ?? null };
   });
 }
 
-const DW_CLASSES = ['Water', 'Trees', 'Grass', 'Flooded vegetation', 'Crops', 'Shrub & scrub', 'Built area', 'Bare ground', 'Snow & ice'];
-const round = (v, d = 3) => (v == null || !Number.isFinite(v) ? null : Math.round(v * 10 ** d) / 10 ** d);
-
 // ─── Fingerprint ──────────────────────────────────────────────────
+// Each metric carries its own status (AVAILABLE | NO_DATA | ERROR | TIMEOUT) and provenance.
 export async function computeFingerprint(input) {
   const ref = await geometryRef(input);
   return memo(`fp:${ref.key}`, async () => {
-    const now = new Date();
-    const end = isoDay(now);
+    const end = isoDay(new Date());
     let stats = null, usedDays = null;
     for (const d of [30, 90, 180]) {
       const s = await windowStats(ref, isoDay(daysAgo(d)), end);
       if (s.n > 0) { stats = s; usedDays = d; break; }
     }
-    const lineageBase = {
-      geometry: ref.label, geometryKey: ref.key, areaKm2: round(ref.areaKm2, 2),
-      processedAt: new Date().toISOString()
-    };
+    const lineage = { geometry: ref.label, geometryKey: ref.key, areaKm2: round(ref.areaKm2, 2), processedAt: new Date().toISOString() };
+    const metrics = {};
     if (!stats) {
-      return {
-        status: 'NO_IMAGERY',
-        message: 'NO SUITABLE OBSERVATIONS FOUND',
-        reason: `No Sentinel-2 SR scenes with <40% cloud intersect this geometry in the last 180 days.`,
-        dateRange: { start: isoDay(daysAgo(180)), end },
-        dataset: S2,
-        lineage: lineageBase,
-        metrics: {}
+      for (const k of Object.keys(INDEX_META)) metrics[k] = { ...INDEX_META[k], status: 'NO_DATA', reason: 'No Sentinel-2 SR scene with <40% cloud intersects this geometry in the last 180 days.', dataset: S2 };
+    } else {
+      const prov = {
+        dataset: S2, datasetLabel: S2_LABEL, method: 'Cloud-masked (SCL) median composite → zonal mean', provider: 'Google Earth Engine',
+        window: `Last ${usedDays} days`, windowStart: stats.start, windowEnd: stats.end, analysisScaleM: stats.scale, imageCount: stats.n
       };
+      for (const k of Object.keys(INDEX_META)) {
+        const v = round(stats[k], 3);
+        metrics[k] = { ...INDEX_META[k], ...prov, value: v, status: v == null ? 'NO_DATA' : 'AVAILABLE', reason: v == null ? 'All pixels masked (cloud/shadow) in the composite.' : undefined };
+      }
     }
-    const windowLabel = `Last ${usedDays} days`;
-    const s2Meta = { dataset: S2, datasetLabel: 'Sentinel-2 SR Harmonized', window: windowLabel, windowStart: stats.start, windowEnd: stats.end, scaleM: stats.scale, imageCount: stats.n };
-    const metrics = {
-      ndvi: { label: 'NDVI', value: round(stats.ndvi, 3), date: stats.end, status: stats.ndvi == null ? 'UNAVAILABLE' : 'AVAILABLE', ...s2Meta },
-      ndwi: { label: 'NDWI', value: round(stats.ndwi, 3), date: stats.end, status: stats.ndwi == null ? 'UNAVAILABLE' : 'AVAILABLE', ...s2Meta }
-    };
-
-    // Land cover + drainage in parallel, each independently fallible
+    // Land cover + drainage: independent, each fallible on its own
     const scale = scaleFor(ref.areaKm2);
+    const lcStart = stats?.start || isoDay(daysAgo(90));
     const [lc, dr] = await Promise.allSettled([
       (async () => {
-        const dw = ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1').filterBounds(ref.aoi)
-          .filterDate(stats.start, stats.end).select('label');
-        const n = await evalEE(dw.size(), 45000);
-        if (!n) return { status: 'NO_IMAGERY', reason: 'No Dynamic World scenes in window' };
+        const dw = ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1').filterBounds(ref.aoi).filterDate(lcStart, end).select('label');
+        const n = await evalEE(dw.size(), 60000);
+        if (!n) return { status: 'NO_DATA', reason: 'No Dynamic World scenes in window', dataset: 'GOOGLE/DYNAMICWORLD/V1' };
         const hist = await evalEE(dw.mode().reduceRegion({
           reducer: ee.Reducer.frequencyHistogram(), geometry: ref.aoi, scale: Math.max(scale, 60), maxPixels: 1e9, bestEffort: true, tileScale: 4
-        }), 90000);
+        }), 100000);
         const h = hist?.label || {};
         const total = Object.values(h).reduce((a, b) => a + b, 0);
-        if (!total) return { status: 'UNAVAILABLE', reason: 'Empty histogram' };
-        const classes = Object.entries(h).map(([k, v]) => ({ id: +k, name: DW_CLASSES[+k] || `class ${k}`, share: v / total }))
+        if (!total) return { status: 'NO_DATA', reason: 'Empty class histogram', dataset: 'GOOGLE/DYNAMICWORLD/V1' };
+        const classes = Object.entries(h).map(([k, v]) => ({ id: +k, name: DW_CLASSES[+k]?.label || `class ${k}`, color: DW_CLASSES[+k]?.color, share: round(v / total, 4) }))
           .sort((a, b) => b.share - a.share);
-        return { status: 'AVAILABLE', top: classes[0], classes: classes.slice(0, 5), dataset: 'GOOGLE/DYNAMICWORLD/V1', datasetLabel: 'Dynamic World v1', window: windowLabel, windowStart: stats.start, windowEnd: stats.end, imageCount: n };
+        return { status: 'AVAILABLE', top: classes[0], classes, dataset: 'GOOGLE/DYNAMICWORLD/V1', datasetLabel: 'Dynamic World v1', method: 'Per-pixel mode of label band → class share', windowStart: lcStart, windowEnd: end, imageCount: n, analysisScaleM: Math.max(scale, 60) };
       })(),
       (async () => {
-        const rivers = ee.FeatureCollection('WWF/HydroSHEDS/v1/FreeFlowingRivers').filterBounds(ref.aoi);
-        const n = await evalEE(rivers.size(), 45000);
-        return { status: n > 0 ? 'AVAILABLE' : 'NONE_FOUND', segments: n, dataset: 'WWF/HydroSHEDS/v1/FreeFlowingRivers', datasetLabel: 'HydroRIVERS (free-flowing)', window: 'Static (2019)' };
+        const rivers = ee.FeatureCollection(RIVERS).filterBounds(ref.aoiSimple);
+        const d = await evalEE(ee.Dictionary({ n: rivers.size(), len: rivers.aggregate_sum('LENGTH_KM'), maxOrd: rivers.aggregate_min('RIV_ORD') }), 60000);
+        return { status: d.n > 0 ? 'AVAILABLE' : 'NO_DATA', segments: d.n, lengthKm: round(d.len, 0), largestRiverOrder: d.maxOrd ?? null, dataset: RIVERS, datasetLabel: 'HydroSHEDS free-flowing rivers', method: 'Reaches intersecting the area (static dataset)' };
       })()
     ]);
-    metrics.landCover = lc.status === 'fulfilled' ? lc.value : { status: 'ERROR', reason: lc.reason?.message };
-    metrics.drainage = dr.status === 'fulfilled' ? dr.value : { status: 'ERROR', reason: dr.reason?.message };
-
+    const settled = (r) => r.status === 'fulfilled' ? r.value : { status: isTimeout(r.reason) ? 'TIMEOUT' : 'ERROR', reason: r.reason?.message };
+    metrics.landCover = settled(lc);
+    metrics.drainage = settled(dr);
+    const core = ['ndvi', 'ndwi', 'ndmi'];
+    const live = core.filter(k => metrics[k].status === 'AVAILABLE').length;
     return {
-      status: 'AVAILABLE',
+      status: !stats ? 'NO_DATA' : live === core.length ? 'AVAILABLE' : live ? 'PARTIAL' : 'NO_DATA',
+      summary: { live, total: core.length },
       computedAt: new Date().toISOString(),
-      period: `${stats.start} → ${stats.end}`,
+      period: stats ? `${stats.start} → ${stats.end}` : null,
       metrics,
-      lineage: lineageBase
+      lineage
     };
   });
 }
 
 // ─── Timeline ─────────────────────────────────────────────────────
+// Phase 1 (this function): real Sentinel-2 acquisition dates over the area — metadata only, one grouped
+// server-side reduction, so it terminates quickly even for continental basins.
+// Phase 2 (computeTimelineIndices): monthly NDVI/NDWI/NDMI, requested separately so an expensive
+// statistic can never take the observation list down with it.
 export async function computeTimeline(input) {
   const ref = await geometryRef(input);
   return memo(`tl:${ref.key}`, async () => {
-    const months = ref.areaKm2 > 2e5 ? 12 : 24;
+    const months = ref.areaKm2 > 1e6 ? 2 : ref.areaKm2 > 2e5 ? 6 : ref.areaKm2 > 2e4 ? 12 : 24;
     const end = isoDay(new Date());
-    const start = isoDay(daysAgo(months * 30));
-    const lineage = { geometry: ref.label, geometryKey: ref.key, processedAt: new Date().toISOString() };
-    const col = s2Col(ref.aoi, start, end, 60)
+    const start = isoDay(daysAgo(Math.round(months * 30.44)));
+    // Continental basins: footprint test against the basin bounding box (orders of magnitude cheaper
+    // than a 10k-vertex polygon); reported in lineage so the approximation is visible.
+    const bboxFootprint = ref.areaKm2 > 2e5;
+    const footprint = bboxFootprint ? ref.aoiSimple.bounds() : ref.aoiSimple;
+    const lineage = { geometry: ref.label, geometryKey: ref.key, footprintTest: bboxFootprint ? 'basin bounding box' : 'basin polygon', processedAt: new Date().toISOString() };
+    const col = ee.ImageCollection(S2).filterBounds(footprint).filterDate(start, end)
       .map(img => img.set('date_str', img.date().format('YYYY-MM-dd')));
-    const meta = await evalEE(ee.Dictionary({
-      dates: col.aggregate_array('date_str'),
-      clouds: col.aggregate_array('CLOUDY_PIXEL_PERCENTAGE')
-    }), 90000);
-    const dates = meta?.dates || [];
-    const byDate = new Map();
-    dates.forEach((d, i) => {
-      const e = byDate.get(d) || { date: d, scenes: 0, cloudSum: 0 };
-      e.scenes++; e.cloudSum += Number(meta.clouds[i]) || 0;
-      byDate.set(d, e);
-    });
-    const obs = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date)).map(e => ({
-      date: e.date, scenes: e.scenes, cloudCover: round(e.cloudSum / e.scenes, 1),
-      type: 'SATELLITE', dataset: 'Sentinel-2 SR Harmonized', ndvi: null, ndwi: null, hasIndices: false
-    }));
+    const reducer = ee.Reducer.mean().combine(ee.Reducer.count(), null, true)
+      .combine(ee.Reducer.first().setOutputs(['imageId']), null, false)
+      .group({ groupField: 2, groupName: 'date' });
+    const grouped = await evalEE(col.reduceColumns(reducer, ['CLOUDY_PIXEL_PERCENTAGE', 'system:index', 'date_str']), 110000);
+    const obs = (grouped?.groups || []).map(g => ({
+      date: g.date, scenes: g.count, cloudCover: round(g.mean, 1), sampleImageId: `${S2}/${g.imageId}`,
+      type: 'SATELLITE', dataset: S2_LABEL
+    })).sort((a, b) => a.date.localeCompare(b.date));
     if (!obs.length) {
-      return {
-        status: 'NO_IMAGERY', observations: [],
-        message: 'NO SUITABLE OBSERVATIONS FOUND',
-        dateRange: { start, end }, dataset: S2, lineage, checkedAt: new Date().toISOString()
-      };
-    }
-    // Indices for the most recent clear-ish dates (server-side per-date mosaics, real reduceRegion)
-    const sample = [...obs].filter(o => o.cloudCover < 40).slice(-14);
-    let statsError = null;
-    if (sample.length) {
-      try {
-        const scale = scaleFor(ref.areaKm2);
-        const dl = ee.List(sample.map(o => o.date));
-        const res = ee.List(dl.map(d => {
-          const day = ee.Date(d);
-          const mos = col.filterDate(day, day.advance(1, 'day')).map(maskS2).mosaic();
-          const idx = ee.Image.cat([
-            mos.normalizedDifference(['B8', 'B4']).rename('ndvi'),
-            mos.normalizedDifference(['B3', 'B8']).rename('ndwi')
-          ]);
-          return ee.Dictionary(idx.reduceRegion({
-            reducer: ee.Reducer.mean(), geometry: ref.aoi, scale, maxPixels: 1e9, bestEffort: true, tileScale: 4
-          })).set('date', d);
-        }));
-        const out = await evalEE(res, 120000);
-        for (const r of out || []) {
-          const o = obs.find(x => x.date === r.date);
-          if (o) { o.ndvi = round(r.ndvi, 3); o.ndwi = round(r.ndwi, 3); o.hasIndices = r.ndvi != null || r.ndwi != null; }
-        }
-      } catch (e) { statsError = e.message; }
+      return { status: 'NO_DATA', observations: [], message: 'No Sentinel-2 acquisitions intersect this area in the window.', dateRange: { start, end }, dataset: S2, lineage, checkedAt: new Date().toISOString() };
     }
     return {
-      status: 'AVAILABLE',
-      observations: obs,
-      totalObservations: obs.length,
-      indicesComputedFor: obs.filter(o => o.hasIndices).length,
-      indicesError: statsError,
-      dateRange: { start, end },
-      dataset: S2,
-      lineage,
-      computedAt: new Date().toISOString()
+      status: 'AVAILABLE', observations: obs, totalObservations: obs.length,
+      totalScenes: obs.reduce((a, o) => a + o.scenes, 0),
+      clearObservations: obs.filter(o => o.cloudCover < 30).length,
+      dateRange: { start, end }, windowMonths: months, dataset: S2, lineage, computedAt: new Date().toISOString()
     };
+  });
+}
+
+/** Monthly cloud-masked composites → zonal mean NDVI/NDWI/NDMI. Each month succeeds/fails on its own. */
+export async function computeTimelineIndices(input) {
+  const ref = await geometryRef(input);
+  return memo(`tli:${ref.key}`, async () => {
+    const months = ref.areaKm2 > 1e6 ? 4 : ref.areaKm2 > 2e5 ? 6 : 12;
+    const scale = Math.max(scaleFor(ref.areaKm2), ref.areaKm2 > 1e6 ? 2000 : ref.areaKm2 > 2e5 ? 500 : 30);
+    const now = new Date();
+    const firstOfMonth = (y, m) => new Date(Date.UTC(y, m, 1));
+    const windows = [];
+    for (let i = months - 1; i >= 0; i--) {
+      const s = firstOfMonth(now.getUTCFullYear(), now.getUTCMonth() - i);
+      const e = i === 0 ? now : firstOfMonth(now.getUTCFullYear(), now.getUTCMonth() - i + 1);
+      windows.push({ month: isoDay(s).slice(0, 7), start: isoDay(s), end: isoDay(e) });
+    }
+    const series = await Promise.all(windows.map(async (w) => {
+      try {
+        const col = s2Col(ref.aoi, w.start, w.end, 50);
+        const r = await evalEE(ee.Dictionary({
+          n: col.size(),
+          v: ee.Algorithms.If(col.size().gt(0),
+            indexImage(col.map(maskS2).median()).reduceRegion({ reducer: ee.Reducer.mean(), geometry: ref.aoi, scale, maxPixels: 1e9, bestEffort: true, tileScale: 4 }),
+            null)
+        }), 100000);
+        if (!r?.n) return { ...w, status: 'NO_DATA', imageCount: 0 };
+        const v = r.v || {};
+        return { ...w, status: 'AVAILABLE', imageCount: r.n, ndvi: round(v.ndvi), ndwi: round(v.ndwi), ndmi: round(v.ndmi) };
+      } catch (e) {
+        return { ...w, status: isTimeout(e) ? 'TIMEOUT' : 'ERROR', reason: e.message };
+      }
+    }));
+    const ok = series.filter(x => x.status === 'AVAILABLE');
+    return {
+      status: ok.length === series.length ? 'AVAILABLE' : ok.length ? 'PARTIAL' : series.every(x => x.status === 'NO_DATA') ? 'NO_DATA' : 'ERROR',
+      series, analysisScaleM: scale, dataset: S2, method: 'Monthly cloud-masked median composite → zonal mean',
+      lineage: { geometry: ref.label, geometryKey: ref.key, processedAt: new Date().toISOString() }
+    };
+  });
+}
+
+// ─── SMAP (NASA SPL4SMGP v008) ───────────────────────────────────
+const SMAP = 'NASA/SMAP/SPL4SMGP/008';
+async function smapLatestDate() {
+  return memo('smap:last', async () => {
+    const t = await evalEE(ee.ImageCollection(SMAP).filterDate(isoDay(daysAgo(120)), isoDay(new Date())).aggregate_max('system:time_start'), 45000);
+    return t ? new Date(t) : null;
   });
 }
 
@@ -485,55 +602,63 @@ export async function computeAttention(input) {
   return memo(`att:${ref.key}`, async () => {
     const lineage = { geometry: ref.label, geometryKey: ref.key, processedAt: new Date().toISOString() };
     const fp = await computeFingerprint(input);
-    if (fp.status !== 'AVAILABLE') {
-      return { status: 'INSUFFICIENT_DATA', items: [], message: 'INSUFFICIENT DATA — no current Sentinel-2 imagery for this geometry.', lineage };
+    if (fp.status === 'NO_DATA') {
+      return { status: 'INSUFFICIENT_DATA', items: [], comparisons: [], message: 'INSUFFICIENT DATA — no current Sentinel-2 imagery for this area.', lineage };
     }
-    const curStart = fp.metrics.ndvi.windowStart, curEnd = fp.metrics.ndvi.windowEnd;
+    const cur = fp.metrics.ndvi;
+    const curStart = cur.windowStart, curEnd = cur.windowEnd;
     const shift = (s) => isoDay(new Date(new Date(s).getTime() - 365 * 86400000));
     const refStats = await windowStats(ref, shift(curStart), shift(curEnd));
+    const refLabel = `same window one year earlier (${shift(curStart)} → ${shift(curEnd)})`;
     const items = [];
     const comparisons = [];
-    if (refStats.n > 0) {
-      const dN = fp.metrics.ndvi.value != null && refStats.ndvi != null ? fp.metrics.ndvi.value - refStats.ndvi : null;
-      const dW = fp.metrics.ndwi.value != null && refStats.ndwi != null ? fp.metrics.ndwi.value - refStats.ndwi : null;
-      comparisons.push({ metric: 'NDVI', current: fp.metrics.ndvi.value, reference: round(refStats.ndvi), delta: round(dN) });
-      comparisons.push({ metric: 'NDWI', current: fp.metrics.ndwi.value, reference: round(refStats.ndwi), delta: round(dW) });
-      const refLabel = `same window one year earlier (${refStats.start} → ${refStats.end})`;
-      if (dN != null && dN <= -0.1) items.push({
-        id: `veg-${ref.key}`, type: 'VEGETATION_STRESS', severity: dN <= -0.2 ? 'HIGH' : 'MEDIUM',
-        metric: 'NDVI', currentValue: fp.metrics.ndvi.value, referenceValue: round(refStats.ndvi), delta: round(dN),
-        date: curEnd, reason: `NDVI is ${Math.abs(dN).toFixed(2)} lower than ${refLabel}.`, source: 'Sentinel-2 SR Harmonized'
+    const thresholds = { ndvi: 0.1, ndwi: 0.1, ndmi: 0.1 };
+    for (const k of ['ndvi', 'ndwi', 'ndmi']) {
+      const c = fp.metrics[k]?.value, r = refStats.n > 0 ? round(refStats[k]) : null;
+      const d = c != null && r != null ? round(c - r) : null;
+      comparisons.push({
+        metric: INDEX_META[k].label, current: c ?? null, reference: r, delta: d,
+        status: d == null ? 'NO_DATA' : Math.abs(d) >= thresholds[k] ? 'DEVIATION' : 'WITHIN_RANGE',
+        source: S2_LABEL, date: curEnd, currentWindow: `${curStart} → ${curEnd}`, referenceWindow: `${shift(curStart)} → ${shift(curEnd)}`
       });
-      if (dW != null && Math.abs(dW) >= 0.1) items.push({
-        id: `wat-${ref.key}`, type: dW > 0 ? 'WATER_EXPANSION' : 'WATER_RECESSION', severity: Math.abs(dW) >= 0.2 ? 'HIGH' : 'MEDIUM',
-        metric: 'NDWI', currentValue: fp.metrics.ndwi.value, referenceValue: round(refStats.ndwi), delta: round(dW),
-        date: curEnd, reason: `NDWI changed by ${dW > 0 ? '+' : ''}${dW.toFixed(2)} versus ${refLabel}.`, source: 'Sentinel-2 SR Harmonized'
+      if (d == null || Math.abs(d) < thresholds[k]) continue;
+      const sev = Math.abs(d) >= 0.2 ? 'HIGH' : 'MEDIUM';
+      const type = k === 'ndvi' ? (d < 0 ? 'VEGETATION_DECLINE' : 'VEGETATION_INCREASE')
+        : k === 'ndwi' ? (d > 0 ? 'WATER_EXPANSION' : 'WATER_RECESSION')
+        : (d < 0 ? 'CANOPY_MOISTURE_DECLINE' : 'CANOPY_MOISTURE_INCREASE');
+      items.push({
+        id: `${k}-${ref.key}`, type, severity: sev, metric: INDEX_META[k].label, currentValue: c, referenceValue: r, delta: d, status: 'DEVIATION',
+        date: curEnd, reason: `${INDEX_META[k].label} ${d > 0 ? 'rose' : 'fell'} by ${Math.abs(d).toFixed(3)} versus the ${refLabel}.`, source: S2_LABEL
       });
     }
-    // SMAP soil moisture anomaly (coarse ~9 km — only meaningful for larger areas)
+    // SMAP surface soil moisture anomaly (~11 km model grid; window ends at the latest available granule)
+    let smapStatus = 'NO_DATA';
     try {
-      const smap = (s, e) => ee.ImageCollection('NASA/SMAP/SPL4SMGP/007').filterDate(s, e).select('sm_surface').mean();
-      const [cur, prev] = await Promise.all([
-        evalEE(smap(curStart, curEnd).reduceRegion({ reducer: ee.Reducer.mean(), geometry: ref.aoi, scale: 9000, maxPixels: 1e9, bestEffort: true }), 60000),
-        evalEE(smap(shift(curStart), shift(curEnd)).reduceRegion({ reducer: ee.Reducer.mean(), geometry: ref.aoi, scale: 9000, maxPixels: 1e9, bestEffort: true }), 60000)
-      ]);
-      if (cur?.sm_surface != null && prev?.sm_surface != null) {
-        const d = cur.sm_surface - prev.sm_surface;
-        comparisons.push({ metric: 'SOIL_MOISTURE', current: round(cur.sm_surface), reference: round(prev.sm_surface), delta: round(d) });
-        if (d <= -0.05) items.push({
-          id: `sm-${ref.key}`, type: 'SOIL_MOISTURE_DEFICIT', severity: d <= -0.1 ? 'HIGH' : 'MEDIUM', metric: 'SMAP sm_surface (m³/m³)',
-          currentValue: round(cur.sm_surface), referenceValue: round(prev.sm_surface), delta: round(d), date: curEnd,
-          reason: `Surface soil moisture is ${Math.abs(d).toFixed(3)} m³/m³ lower than the same window one year earlier.`, source: 'NASA SMAP L4'
-        });
+      const last = await smapLatestDate();
+      if (last) {
+        const e = isoDay(new Date(last.getTime() + 86400000)), s = isoDay(daysAgo(30, last));
+        const mean = (a, b) => evalEE(ee.ImageCollection(SMAP).filterDate(a, b).select('sm_surface').mean()
+          .reduceRegion({ reducer: ee.Reducer.mean(), geometry: ref.aoiSimple, scale: 11000, maxPixels: 1e9, bestEffort: true }), 60000);
+        const [c, p] = await Promise.all([mean(s, e), mean(shift(s), shift(e))]);
+        if (c?.sm_surface != null && p?.sm_surface != null) {
+          const d = round(c.sm_surface - p.sm_surface);
+          smapStatus = 'AVAILABLE';
+          comparisons.push({ metric: 'SMAP soil moisture (m³/m³)', current: round(c.sm_surface), reference: round(p.sm_surface), delta: d, status: Math.abs(d) >= 0.05 ? 'DEVIATION' : 'WITHIN_RANGE', source: 'NASA SMAP L4 v008', date: isoDay(last), currentWindow: `${s} → ${isoDay(last)}`, referenceWindow: `${shift(s)} → ${shift(isoDay(last))}` });
+          if (d <= -0.05) items.push({
+            id: `sm-${ref.key}`, type: 'SOIL_MOISTURE_DEFICIT', severity: d <= -0.1 ? 'HIGH' : 'MEDIUM', metric: 'SMAP sm_surface', status: 'DEVIATION',
+            currentValue: round(c.sm_surface), referenceValue: round(p.sm_surface), delta: d, date: isoDay(last),
+            reason: `Surface soil moisture is ${Math.abs(d).toFixed(3)} m³/m³ lower than the same 30 days one year earlier.`, source: 'NASA SMAP L4 v008'
+          });
+        }
       }
-    } catch (e) { /* SMAP is optional; its absence is reported via comparisons */ }
+    } catch (e) { smapStatus = isTimeout(e) ? 'TIMEOUT' : 'ERROR'; }
 
+    const status = refStats.n > 0 ? (items.length ? 'AVAILABLE' : 'NO_ATTENTION_ITEMS') : 'INSUFFICIENT_DATA';
     return {
-      status: refStats.n > 0 ? (items.length ? 'AVAILABLE' : 'NO_ATTENTION_ITEMS') : 'INSUFFICIENT_DATA',
-      items, comparisons,
+      status, items, comparisons, smapStatus,
       message: refStats.n === 0
-        ? 'INSUFFICIENT DATA — no reference imagery from one year earlier.'
-        : items.length ? `${items.length} indicator(s) deviate from the same-season reference.` : 'No indicator deviates from the same-season reference beyond thresholds.',
+        ? 'INSUFFICIENT DATA — no reference Sentinel-2 imagery one year earlier.'
+        : items.length ? `${items.length} indicator(s) deviate from the same-season reference.` : 'No indicator deviates from the same-season reference beyond thresholds (±0.10 index, −0.05 m³/m³ soil moisture).',
       lineage: { ...lineage, current: `${curStart} → ${curEnd}`, reference: `${shift(curStart)} → ${shift(curEnd)}` },
       computedAt: new Date().toISOString()
     };
@@ -547,6 +672,8 @@ export function listLayers() {
 
 export async function computeLayerTile(input, layerId, startDate, endDate) {
   assertEE();
+  const def = WATERSHED_LAYERS[layerId];
+  if (!def) throw new GeoError('UNKNOWN_LAYER', `Unknown layer: ${layerId}`, 400);
   if (layerId === 'boundary') return { available: true, vector: true, layerId, dataStatus: 'AVAILABLE' };
   const ref = await geometryRef(input);
   const end = endDate || isoDay(new Date());
@@ -554,87 +681,85 @@ export async function computeLayerTile(input, layerId, startDate, endDate) {
   const key = `layer:${ref.key}:${layerId}:${start}:${end}`;
   return memo(key, async () => {
     const aoi = ref.aoi;
-    let image, vis, displayName, source, date = end, dataset, extras = {};
+    let image, vis = def.vis, date = end, extras = {};
     switch (layerId) {
       case 'ndvi':
       case 'ndwi':
+      case 'ndmi':
       case 'sentinel2': {
-        // widen window if empty so the tile reflects real imagery over the geometry
+        // widen the window if empty so the tile reflects real imagery over the geometry
         let usedStart = start, n = 0;
         for (const d of [0, 60, 150]) {
           usedStart = isoDay(daysAgo(30 + d, new Date(end)));
-          n = await evalEE(s2Col(aoi, usedStart, end, 40).size(), 45000);
+          n = await evalEE(s2Col(aoi, usedStart, end, 40).size(), 60000);
           if (n > 0) break;
         }
-        if (!n) return { available: false, layerId, dataStatus: 'NO_IMAGERY', reason: 'No Sentinel-2 scenes with <40% cloud in the last 180 days for this geometry.' };
+        if (!n) return { available: false, layerId, dataStatus: 'NO_DATA', reason: 'No Sentinel-2 scenes with <40% cloud in the last 180 days for this area.', dataset: S2, checked: { start: isoDay(daysAgo(180, new Date(end))), end } };
         const comp = s2Col(aoi, usedStart, end, 40).map(maskS2).median().clip(aoi);
-        if (layerId === 'ndvi') {
-          image = comp.normalizedDifference(['B8', 'B4']);
-          vis = { min: -0.2, max: 0.8, palette: ['d73027', 'f46d43', 'fdae61', 'fee08b', 'd9ef8b', 'a6d96a', '66bd63', '1a9850'] };
-          displayName = 'Vegetation (NDVI)';
-        } else if (layerId === 'ndwi') {
-          image = comp.normalizedDifference(['B3', 'B8']);
-          vis = { min: -0.5, max: 0.5, palette: ['d73027', 'f46d43', 'fee08b', 'ffffbf', 'c6dbef', '6baed6', '08519c'] };
-          displayName = 'Surface Water (NDWI)';
-        } else {
-          image = comp.select(['B4', 'B3', 'B2']);
-          vis = { bands: ['B4', 'B3', 'B2'], min: 0, max: 3000, gamma: 1.2 };
-          displayName = 'True Color (Sentinel-2)';
-        }
-        source = 'Sentinel-2 SR Harmonized'; dataset = S2;
+        image = layerId === 'sentinel2' ? comp.select(['B4', 'B3', 'B2']) : comp.normalizedDifference(INDEX_BANDS[layerId]);
         extras = { windowStart: usedStart, windowEnd: end, imageCount: n };
         break;
       }
       case 'dynamicWorld': {
-        const col = ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1').filterBounds(aoi).filterDate(start, end);
-        let n = await evalEE(col.size(), 45000);
-        let c2 = col, s2 = start;
-        if (!n) { s2 = isoDay(daysAgo(180, new Date(end))); c2 = ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1').filterBounds(aoi).filterDate(s2, end); n = await evalEE(c2.size(), 45000); }
-        if (!n) return { available: false, layerId, dataStatus: 'NO_IMAGERY', reason: 'No Dynamic World scenes in the last 180 days for this geometry.' };
+        let s2 = start, c2 = ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1').filterBounds(aoi).filterDate(start, end);
+        let n = await evalEE(c2.size(), 60000);
+        if (!n) { s2 = isoDay(daysAgo(180, new Date(end))); c2 = ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1').filterBounds(aoi).filterDate(s2, end); n = await evalEE(c2.size(), 60000); }
+        if (!n) return { available: false, layerId, dataStatus: 'NO_DATA', reason: 'No Dynamic World scenes in the last 180 days for this area.', dataset: def.dataset };
         image = c2.select('label').mode().clip(aoi);
-        vis = { min: 0, max: 8, palette: ['419BDF', '397D49', '88B053', '7A87C6', 'E49635', 'DFC35A', 'C4281B', 'A59B8F', 'B39FE1'] };
-        displayName = 'Land Cover (Dynamic World)'; source = 'Dynamic World v1'; dataset = 'GOOGLE/DYNAMICWORLD/V1';
         extras = { windowStart: s2, windowEnd: end, imageCount: n };
         break;
       }
       case 'terrain': {
-        const dem = ee.Image('USGS/SRTMGL1_003').select('elevation').clip(aoi);
-        // data-driven stretch from the geometry itself
-        const mm = await evalEE(dem.reduceRegion({ reducer: ee.Reducer.percentile([2, 98]), geometry: aoi, scale: Math.max(scaleFor(ref.areaKm2), 90), maxPixels: 1e9, bestEffort: true, tileScale: 4 }), 60000)
+        const dem = ee.Image('USGS/SRTMGL1_003').select('elevation');
+        const mm = await evalEE(dem.reduceRegion({ reducer: ee.Reducer.percentile([2, 98]), geometry: ref.aoiSimple, scale: Math.max(scaleFor(ref.areaKm2), 90), maxPixels: 1e9, bestEffort: true, tileScale: 4 }), 60000)
           .catch(() => null);
-        const lo = mm?.elevation_p2 ?? 0, hi = mm?.elevation_p98 ?? 3000;
-        image = dem;
-        vis = { min: lo, max: hi > lo ? hi : lo + 100, palette: ['006633', 'E5FFCC', '662A00', 'D8D8D8', 'F5F5F5'] };
-        displayName = 'Terrain (SRTM 30 m)'; source = 'SRTM GL1 (USGS/NASA)'; dataset = 'USGS/SRTMGL1_003'; date = '2000';
-        extras = { stretchMin: round(lo, 0), stretchMax: round(hi, 0) };
+        const lo = Math.round(mm?.elevation_p2 ?? 0), hi0 = Math.round(mm?.elevation_p98 ?? 3000);
+        const hi = hi0 > lo ? hi0 : lo + 100;
+        // colour relief × hillshade, rendered as a ready RGB image
+        const colour = dem.visualize({ min: lo, max: hi, palette: def.vis.palette });
+        const shade = ee.Terrain.hillshade(dem).divide(255).multiply(0.6).add(0.4);
+        image = colour.multiply(shade).uint8().clip(aoi);
+        vis = {};
+        date = '2000 (SRTM mission)';
+        extras = { stretchMin: lo, stretchMax: hi, legend: { type: 'gradient', min: lo, max: hi, unit: 'm' } };
         break;
       }
       case 'soilMoisture': {
-        const sm = ee.ImageCollection('NASA/SMAP/SPL4SMGP/007').filterDate(start, end).select('sm_surface');
-        const n = await evalEE(sm.size(), 30000);
-        if (!n) return { available: false, layerId, dataStatus: 'NO_IMAGERY', reason: `No SMAP L4 granules between ${start} and ${end}.` };
+        const last = await smapLatestDate();
+        if (!last) return { available: false, layerId, dataStatus: 'NO_DATA', reason: 'No SMAP L4 granules in the last 120 days.', dataset: SMAP, resolution: def.resolution, checked: { start: isoDay(daysAgo(120)), end } };
+        const e = isoDay(new Date(last.getTime() + 86400000)), s = isoDay(daysAgo(7, last));
+        const sm = ee.ImageCollection(SMAP).filterDate(s, e).select('sm_surface');
+        const n = await evalEE(sm.size(), 45000);
+        if (!n) return { available: false, layerId, dataStatus: 'NO_DATA', reason: `No SMAP L4 granules between ${s} and ${e}.`, dataset: SMAP, resolution: def.resolution, checked: { start: s, end: e } };
         image = sm.mean().clip(aoi);
-        vis = { min: 0.02, max: 0.5, palette: ['red', 'orange', 'yellow', 'lime', 'blue'] };
-        displayName = 'Soil Moisture (SMAP ~9 km)'; source = 'NASA SMAP Level-4'; dataset = 'NASA/SMAP/SPL4SMGP/007';
-        extras = { windowStart: start, windowEnd: end, imageCount: n };
+        date = isoDay(last);
+        extras = { windowStart: s, windowEnd: isoDay(last), imageCount: n, note: 'Latest 7 days of 3-hourly SMAP L4 analyses (data latency ≈ days).' };
         break;
       }
       case 'drainage': {
-        const rivers = ee.FeatureCollection('WWF/HydroSHEDS/v1/FreeFlowingRivers').filterBounds(aoi);
-        image = ee.Image().byte().paint({ featureCollection: rivers, color: 1, width: 2 }).clip(aoi);
-        vis = { palette: ['6366f1'] };
-        displayName = 'Drainage Network (HydroRIVERS)'; source = 'WWF HydroSHEDS'; dataset = 'WWF/HydroSHEDS/v1/FreeFlowingRivers'; date = '2019';
+        // legible at basin scale: only reaches whose upstream area is ≥ 0.2% of the basin (min 50 km²)
+        const minUpland = Math.max(50, Math.round((ref.areaKm2 || 0) * 0.002));
+        const rivers = ee.FeatureCollection(RIVERS).filterBounds(ref.aoiSimple).filter(ee.Filter.gte('UPLAND_SKM', minUpland))
+          .map(f => {
+            const up = ee.Number(f.get('UPLAND_SKM'));
+            const cls = ee.Algorithms.If(up.gte(minUpland * 50), 3, ee.Algorithms.If(up.gte(minUpland * 5), 2, 1));
+            return f.set({ cls, w: ee.Number(cls) });
+          });
+        image = ee.Image().byte().paint({ featureCollection: rivers, color: 'cls', width: 'w' }).clip(aoi);
+        date = 'static (HydroSHEDS v1)';
+        extras = { minUplandKm2: minUpland, note: `Reaches with upstream area ≥ ${minUpland} km² shown; width/colour by upstream area.` };
         break;
       }
       default:
-        return { available: false, layerId, dataStatus: 'UNAVAILABLE', reason: `Unknown layer: ${layerId}` };
+        throw new GeoError('UNKNOWN_LAYER', `Unknown layer: ${layerId}`, 400);
     }
     const mapId = await new Promise((resolve, reject) => {
-      image.getMapId(vis, (obj, err) => err ? reject(new GeoError(classifyEEError(err), String(err), 502)) : resolve(obj));
+      const t = setTimeout(() => reject(new GeoError('ANALYSIS_FAILED', 'Earth Engine getMapId timed out after 60s', 504)), 60000);
+      image.getMapId(vis, (obj, err) => { clearTimeout(t); err ? reject(new GeoError(classifyEEError(err), String(err), 502)) : resolve(obj); });
     });
     return {
-      available: true, layerId, tileUrl: mapId.urlFormat, displayName, source, dataset, date,
-      dataStatus: 'AVAILABLE', visParams: vis, ...extras,
+      available: true, layerId, mapLayerId: def.mapId, tileUrl: mapId.urlFormat, displayName: def.label, source: def.source, dataset: def.dataset,
+      resolution: def.resolution, date, dataStatus: 'AVAILABLE', visParams: vis, ...extras,
       lineage: { geometry: ref.label, geometryKey: ref.key, processedAt: new Date().toISOString() }
     };
   });
@@ -642,13 +767,14 @@ export async function computeLayerTile(input, layerId, startDate, endDate) {
 
 // ─── Saved / seeded watersheds ────────────────────────────────────
 const SEEDS = [
-  { name: 'Sardar Sarovar / Narmada', lat: 21.83, lon: 73.75, level: 5, river: 'Narmada', description: 'Narmada basin around the Sardar Sarovar dam (Gujarat / Madhya Pradesh).' },
+  { name: 'Sardar Sarovar / Narmada', lat: 21.83, lon: 73.75, level: 5, river: 'Narmada', feature: 'Sardar Sarovar Dam', description: 'Narmada basin draining to the Sardar Sarovar dam (Gujarat / Madhya Pradesh).' },
+  { name: 'Mahanadi', lat: 21.53, lon: 83.87, level: 4, river: 'Mahanadi', feature: 'Hirakud Dam', description: 'Mahanadi basin including the Hirakud reservoir (Odisha / Chhattisgarh).' },
   { name: 'Subarnarekha', lat: 22.80, lon: 86.20, level: 6, river: 'Subarnarekha', description: 'Eastern India basin spanning Jharkhand, West Bengal and Odisha.' },
   { name: 'Bhadar', lat: 21.75, lon: 70.62, level: 7, river: 'Bhadar', description: 'Saurashtra (Gujarat) catchment — check dams and irrigation.' },
-  { name: 'Mahanadi', lat: 21.53, lon: 83.87, level: 4, river: 'Mahanadi', description: 'Mahanadi basin at Hirakud (Odisha / Chhattisgarh).' },
   { name: 'Godavari', lat: 18.00, lon: 79.55, level: 4, river: 'Godavari', description: 'Peninsular India\'s largest river basin.' },
-  { name: 'Amazon', lat: -3.13, lon: -60.02, level: 3, river: 'Amazon', description: 'Amazon basin near Manaus (South America).' },
-  { name: 'Congo', lat: -4.30, lon: 15.30, level: 3, river: 'Congo', description: 'Congo basin near Kinshasa (Central Africa).' }
+  { name: 'Congo', lat: -4.30, lon: 15.30, level: 3, river: 'Congo', description: 'Congo basin resolved at Kinshasa (Central Africa).' },
+  { name: 'Amazon', lat: -3.13, lon: -60.02, level: 3, river: 'Amazon', description: 'Amazon basin resolved at Manaus (South America).' },
+  { name: 'Nile', lat: 30.05, lon: 31.25, level: 3, river: 'Nile', feature: 'Aswan High Dam', description: 'Nile basin resolved at Cairo (North-East Africa).' }
 ];
 export const SEED_NAMES = SEEDS.map(s => s.name);
 
@@ -675,6 +801,11 @@ export async function recordFromContext(ctx, extra = {}) {
     isDemo: !!ctx.isDemo,
     isSaved: ctx.isSaved !== false,
     metadata: ctx.metadata || {},
+    technicalName: ctx.technicalName ?? null,
+    naming: ctx.naming ?? null,
+    river: ctx.river ?? null,
+    riverSystem: ctx.riverSystem ?? null,
+    sourceId: ctx.sourceId ?? null,
     createdAt: ctx.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     ...extra
@@ -688,7 +819,10 @@ export async function upsertRecord(rec) {
   return store.getRow('watersheds', rec.id);
 }
 
-/** Remove legacy rows with no recoverable geometry; seed curated watersheds with REAL HydroBASINS geometry. */
+/**
+ * Remove legacy rows with no recoverable geometry; seed curated DEMO watersheds with REAL HydroBASINS geometry.
+ * Demo rows are isDemo:true / isSaved:false — they never appear in the user's Saved list.
+ */
 let seeding = null;
 export function ensureSeeds() {
   if (seeding) return seeding;
@@ -705,25 +839,36 @@ export function ensureSeeds() {
       }
     }
     if (removed) console.log(`[Geo] removed ${removed} legacy watershed record(s) without real geometry`);
-    if (!_eeReady) return;
+    if (!_eeReady) { seeding = null; return; }
     const current = await store.getAllRows('watersheds').catch(() => []);
-    const have = new Set(current.filter(r => r.isDemo).map(r => r.metadata?.seedName));
     for (const s of SEEDS) {
-      if (have.has(s.name)) continue;
+      const existing = current.find(r => r.isDemo && r.metadata?.seedName === s.name);
       try {
-        const r = await resolvePoint(s.lat, s.lon, { levels: [s.level] });
-        const c = r.candidates[0];
-        if (!c) { console.warn(`[Geo] seed ${s.name}: no basin at level ${s.level}`); continue; }
-        c.country = (await countriesFor({ type: 'Point', coordinates: c.center })).join(' / ') || null;
-        const rec = await recordFromContext({
-          ...c, name: s.name, displayName: `${s.name} (HydroBASINS L${c.level})`, isDemo: true, isSaved: true,
-          metadata: { ...c.metadata, seedName: s.name, river: s.river, description: s.description, seededFrom: { lat: s.lat, lon: s.lon, level: s.level } }
-        });
+        let rec;
+        if (existing && existing.naming?.status && existing.isSaved === false && existing.metadata?.demoVersion === 2) continue;
+        if (existing) {
+          // migrate: keep the stored HydroBASINS geometry, add dataset naming, detach from Saved
+          rec = { ...existing };
+        } else {
+          const r = await resolvePoint(s.lat, s.lon, { levels: [s.level] });
+          const c = r.candidates[0];
+          if (!c) { console.warn(`[Geo] seed ${s.name}: no basin at level ${s.level}`); continue; }
+          c.country = (await countriesFor({ type: 'Point', coordinates: c.center })).join(' / ') || null;
+          rec = await recordFromContext({ ...c, isDemo: true, isSaved: false });
+        }
+        const named = await nameBasin({ ...rec, technicalName: rec.technicalName || technicalName(rec.level, rec.metadata?.PFAF_ID ?? rec.sourceFeatureId) });
+        rec = {
+          ...rec, name: named.name, displayName: named.name, technicalName: named.technicalName, naming: named.naming,
+          river: named.river ?? s.river, riverSystem: named.riverSystem ?? null,
+          isDemo: true, isSaved: false,
+          metadata: { ...rec.metadata, seedName: s.name, demoLabel: s.name, river: s.river, feature: s.feature || null, description: s.description, seededFrom: { lat: s.lat, lon: s.lon, level: s.level }, demoVersion: 2 },
+          updatedAt: new Date().toISOString()
+        };
         await upsertRecord(rec);
-        console.log(`[Geo] seeded ${s.name} → ${rec.id} (${Math.round(rec.areaKm2)} km²)`);
+        console.log(`[Geo] demo ${s.name} → ${rec.id} "${rec.name}" (${Math.round(rec.areaKm2)} km², naming ${rec.naming?.status})`);
       } catch (e) { console.warn(`[Geo] seed ${s.name} failed: ${e.message}`); }
     }
-  })().catch(e => console.warn('[Geo] ensureSeeds error', e.message)).finally(() => { /* allow manual re-run */ });
+  })().catch(e => { console.warn('[Geo] ensureSeeds error', e.message); seeding = null; });
   return seeding;
 }
 

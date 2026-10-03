@@ -1,115 +1,153 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { X, Pin } from 'lucide-react';
-import { motion, useDragControls } from 'framer-motion';
+import React, { useState, useRef, useLayoutEffect, useEffect, useCallback } from 'react';
+import { X, ChevronDown, ChevronUp, Maximize2, Minimize2 } from 'lucide-react';
+import { motion, useDragControls, useMotionValue } from 'framer-motion';
 import './FloatingPanel.css';
 
+const INTERACTIVE = 'button, a, input, select, textarea, label, [role="slider"], [data-no-drag]';
+const MARGIN = 8;
+
+/**
+ * Reusable floating panel: DRAG (header only) · SCROLL (body) · COLLAPSE · EXPAND · CLOSE · RESIZE.
+ * Stays inside the viewport while dragging, expanding, resizing and on window resize.
+ *
+ * position: { left | right, top | bottom } in px from the viewport edges.
+ */
 export default function FloatingPanel({
   id,
   title,
+  subtitle,
+  status,
+  headerActions,
   isOpen,
-  isPinned,
   onClose,
-  onPin,
   bringToFront,
   zIndex = 10,
-  defaultPosition = { x: 24, y: 80 },
-  defaultSize = { width: 320, height: 'auto' },
+  position = { left: 24, top: 80 },
+  width = 320,
+  maxHeight,
+  expandedWidth = 760,
+  defaultMode = 'normal',
+  mode: controlledMode,
+  onModeChange,
+  className = '',
   children
 }) {
-  const [size, setSize] = useState({ 
-    width: typeof defaultSize.width === 'number' ? defaultSize.width : parseInt(defaultSize.width) || 320, 
-    height: typeof defaultSize.height === 'number' ? defaultSize.height : (defaultSize.height === 'auto' ? 'auto' : parseInt(defaultSize.height))
-  });
-  
-  // Convert position to number or string (framer motion works best with numbers for drag limits)
-  const leftPos = typeof defaultPosition.x === 'string' && defaultPosition.x.includes('calc') 
-    ? (defaultPosition.x.includes('100%') ? window.innerWidth - parseInt(defaultPosition.x.match(/\d+/)[0]) : 24)
-    : (typeof defaultPosition.x === 'number' ? defaultPosition.x : parseInt(defaultPosition.x) || 24);
-    
-  const topPos = typeof defaultPosition.y === 'string' && defaultPosition.y.includes('calc') 
-    ? (defaultPosition.y.includes('100%') ? window.innerHeight - parseInt(defaultPosition.y.match(/\d+/)[0]) : 80)
-    : (typeof defaultPosition.y === 'number' ? defaultPosition.y : parseInt(defaultPosition.y) || 80);
-
+  const [innerMode, setInnerMode] = useState(defaultMode);
+  const mode = controlledMode ?? innerMode;
+  const setMode = useCallback((m) => { setInnerMode(m); onModeChange?.(m); }, [onModeChange]);
+  const [size, setSize] = useState(null); // user-resized { width, height }
   const dragControls = useDragControls();
   const panelRef = useRef(null);
+  const x = useMotionValue(0);
+  const y = useMotionValue(0);
+
+  // initial placement from the requested edges
+  const [origin] = useState(() => {
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const left = position.left ?? Math.max(MARGIN, vw - (position.right ?? 24) - width);
+    const top = position.top ?? Math.max(MARGIN, vh - (position.bottom ?? 24) - 200);
+    return { left, top };
+  });
+
+  /** Pull the panel back inside the viewport (after expand / resize / window resize). */
+  const clamp = useCallback(() => {
+    const el = panelRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const vw = window.innerWidth, vh = window.innerHeight;
+    let dx = 0, dy = 0;
+    if (r.right > vw - MARGIN) dx = vw - MARGIN - r.right;
+    if (r.left + dx < MARGIN) dx = MARGIN - r.left;
+    if (r.bottom > vh - MARGIN) dy = vh - MARGIN - r.bottom;
+    if (r.top + dy < MARGIN) dy = MARGIN - r.top;
+    if (dx) x.set(x.get() + dx);
+    if (dy) y.set(y.get() + dy);
+  }, [x, y]);
+
+  useLayoutEffect(() => { if (isOpen) clamp(); }, [mode, size, isOpen, clamp]);
+  useEffect(() => {
+    window.addEventListener('resize', clamp);
+    return () => window.removeEventListener('resize', clamp);
+  }, [clamp]);
 
   if (!isOpen) return null;
+
+  const expanded = mode === 'expanded';
+  const collapsed = mode === 'collapsed';
+  const w = expanded ? Math.min(expandedWidth, window.innerWidth - 120) : (size?.width ?? width);
+  const style = {
+    position: 'absolute',
+    top: origin.top,
+    left: origin.left,
+    width: w,
+    height: collapsed ? 'auto' : (expanded ? undefined : size?.height),
+    maxHeight: collapsed ? undefined : (expanded ? 'calc(100vh - 96px)' : (maxHeight ?? 'calc(100vh - 120px)')),
+    zIndex,
+    x, y
+  };
+
+  const startDrag = (e) => {
+    if (e.button !== 0 || e.target.closest(INTERACTIVE)) return; // never drag from controls
+    dragControls.start(e);
+  };
 
   return (
     <motion.div
       ref={panelRef}
-      className={`floating-panel-container ${isPinned ? 'is-pinned' : ''}`}
+      data-panel-id={id}
+      className={`floating-panel-container ${collapsed ? 'is-collapsed' : ''} ${expanded ? 'is-expanded' : ''} ${className}`}
       drag
       dragControls={dragControls}
       dragListener={false}
       dragMomentum={false}
-      onMouseDown={() => bringToFront && bringToFront(id)}
-      style={{
-        position: 'absolute',
-        top: topPos,
-        left: leftPos,
-        width: size.width === 'auto' ? 'auto' : `${size.width}px`,
-        height: size.height === 'auto' ? 'auto' : `${size.height}px`,
-        zIndex: zIndex
-      }}
+      dragElastic={0}
+      onDragEnd={clamp}
+      onPointerDownCapture={() => bringToFront?.(id)}
+      style={style}
     >
-      <div 
-        className="floating-panel-header"
-        onPointerDown={(e) => dragControls.start(e)}
-        style={{ cursor: 'grab' }}
-      >
-        <span className="floating-panel-title">{title}</span>
+      <div className="floating-panel-header" onPointerDown={startDrag} onDoubleClick={(e) => { if (!e.target.closest(INTERACTIVE)) setMode(expanded ? 'normal' : 'expanded'); }}>
+        <div className="floating-panel-titles">
+          <span className="floating-panel-title">{title}</span>
+          {subtitle && <span className="floating-panel-subtitle">{subtitle}</span>}
+        </div>
+        {status && <div className="floating-panel-status">{status}</div>}
         <div className="floating-panel-actions">
-          {onPin && (
-            <button
-              className={`panel-action-btn ${isPinned ? 'active' : ''}`}
-              onClick={(e) => { e.stopPropagation(); onPin(); }}
-              title={isPinned ? 'Unpin Panel' : 'Pin Panel'}
-            >
-              <Pin size={12} />
-            </button>
-          )}
+          {headerActions}
+          <button className="panel-action-btn" title={collapsed ? 'Expand panel body' : 'Collapse'} aria-label={collapsed ? 'Show panel' : 'Collapse panel'}
+            onClick={() => setMode(collapsed ? 'normal' : 'collapsed')}>
+            {collapsed ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
+          </button>
+          <button className="panel-action-btn" title={expanded ? 'Restore size' : 'Expand'} aria-label={expanded ? 'Restore panel' : 'Expand panel'}
+            onClick={() => setMode(expanded ? 'normal' : 'expanded')}>
+            {expanded ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+          </button>
           {onClose && (
-            <button
-              className="panel-action-btn"
-              onClick={(e) => { e.stopPropagation(); onClose(); }}
-              title="Close Panel"
-            >
+            <button className="panel-action-btn" title="Close" aria-label="Close panel" onClick={onClose}>
               <X size={14} />
             </button>
           )}
         </div>
       </div>
-      <div className="floating-panel-body">
-        {children}
-      </div>
-      
-      {/* Resize Handle */}
-      <div 
-        className="floating-panel-resizer"
-        onPointerDown={(e) => {
-          e.stopPropagation();
-          const startX = e.clientX;
-          const startY = e.clientY;
-          const startWidth = panelRef.current.offsetWidth;
-          const startHeight = panelRef.current.offsetHeight;
+      {!collapsed && <div className="floating-panel-body">{children}</div>}
 
-          const onPointerMove = (moveEvent) => {
-            setSize({
-              width: Math.max(250, startWidth + (moveEvent.clientX - startX)),
-              height: Math.max(150, startHeight + (moveEvent.clientY - startY))
+      {!collapsed && !expanded && (
+        <div
+          className="floating-panel-resizer"
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            const startX = e.clientX, startY = e.clientY;
+            const startW = panelRef.current.offsetWidth, startH = panelRef.current.offsetHeight;
+            const move = (m) => setSize({
+              width: Math.max(250, Math.min(window.innerWidth - 100, startW + (m.clientX - startX))),
+              height: Math.max(140, Math.min(window.innerHeight - 40, startH + (m.clientY - startY)))
             });
-          };
-
-          const onPointerUp = () => {
-            window.removeEventListener('pointermove', onPointerMove);
-            window.removeEventListener('pointerup', onPointerUp);
-          };
-
-          window.addEventListener('pointermove', onPointerMove);
-          window.addEventListener('pointerup', onPointerUp);
-        }}
-      />
+            const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+            window.addEventListener('pointermove', move);
+            window.addEventListener('pointerup', up);
+          }}
+        />
+      )}
     </motion.div>
   );
 }

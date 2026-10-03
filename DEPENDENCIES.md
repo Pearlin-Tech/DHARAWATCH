@@ -1,74 +1,89 @@
 # DEPENDENCIES
 
-This file documents the dependencies used in the SATQUERY AI (DRISHTIWATCH) project.
+Everything needed to run DHARAWATCH after a fresh `git clone`.
 
 ## 1. Runtime requirements
-- **Node.js**: v18+ (Recommended)
-- **npm**: v9+ (Included with Node.js)
+| Tool | Version | Notes |
+| --- | --- | --- |
+| **Node.js** | **≥ 20.19** (22 LTS recommended — see `.nvmrc`) | Vite 8 refuses to start on older Node. `package.json → engines` enforces this. |
+| **npm** | ≥ 10 | Ships with Node 20/22. |
+| Native build | — | `sqlite3` and `sharp` ship prebuilt binaries for macOS / Linux / Windows; no compiler is normally required. If `npm install` fails on them, install the platform build tools (Xcode CLT on macOS, `build-essential` + `python3` on Linux). |
+
+Install everything (frontend + backend) with one command:
+
+```bash
+npm install
+```
+
+`npm install` also runs `postinstall → npm run seed:public-data`, which creates `server-data/satquery.sqlite`. The database is **not** committed (`server-data/` is git-ignored); each machine builds its own.
 
 ## 2. Frontend dependencies
 | Package | Version | Purpose |
 | --- | --- | --- |
-| `react` | ^19.2.8 | Core UI library |
-| `react-dom` | ^19.2.8 | DOM rendering for React |
-| `react-router-dom` | ^7.18.4 | Client-side routing |
-| `framer-motion` | ^13.4.4 | Animation library |
-| `lucide-react` | ^1.48.0 | SVG icons |
-| `maplibre-gl` | ^6.11.2 | Map rendering engine |
-| `recharts` | ^3.10.1 | Data visualization and charts |
+| `react`, `react-dom` | ^19.3.0 | UI |
+| `react-router-dom` | ^7.18.4 | Routing |
+| `maplibre-gl` | ^6.11.2 | Map engine (watershed boundary, Earth Engine raster tiles, drawing) |
+| `framer-motion` | ^13.4.4 | Draggable floating panels, animation |
+| `lucide-react` | ^1.48.0 | Icons |
+| `recharts` (+ `internmap`) | ^3.10.1 | Charts |
+| `geotiff` | ^3.0.5 | Client-side GeoTIFF reading (Detect / Ask) |
 
 ## 3. Backend dependencies
 | Package | Version | Purpose |
 | --- | --- | --- |
-| `express` | ^5.2.1 | Local backend server |
-| `cors` | ^2.8.6 | CORS middleware |
-| `body-parser` | ^2.3.0 | JSON payload parsing |
-| `sqlite3` | ^6.0.1 | SQLite local database driver |
-| `google-auth-library` | ^11.1.0 | Server-side authentication |
-| `@google/earthengine` | ^1.7.45 | Earth Engine Node.js client |
-| `dotenv` | ^18.0.4 | Environment variable loader |
+| `express` | ^5.2.1 | API server (`server.js`, default port 3001) |
+| `cors` | ^2.8.6 | CORS |
+| `dotenv` | ^18.0.4 | Loads `.env.local` |
+| `sqlite3` | ^6.0.1 | Local database (`server-data/satquery.sqlite`) |
+| `@google/earthengine` | ^1.7.45 | Earth Engine client — all satellite analytics and map tiles |
+| `google-auth-library` | ^11.1.0 | Service-account auth helpers |
+| `multer` | ^2.4.0 | Photo / GeoTIFF uploads |
+| `sharp` | ^0.35.5 | Field photo thumbnails |
+| `exifr` | ^7.1.3 | Field photo EXIF / GPS |
+| `serverless-http` | ^4.0.0 | Netlify function wrapper |
 
-## 4. Mapping
-- **Engine**: MapLibre GL JS (`maplibre-gl`)
-- **Tiles**: Currently uses basic satellite sources. Ready for advanced tiles.
-
-## 5. Geospatial
-- Built-in MapLibre logic for coordinates and simple geometric interactions.
-
-## 6. AI
-- To be integrated via secure backend endpoints to chosen LLM provider.
-
-## 7. Satellite / Earth Engine
-- Earth Engine scripts ready on backend; authenticated securely without exposing credentials to the client.
-
-## 8. Database
-- **SQLite3**: Used by the local Express server for offline persistence (Reports, Evidence, Settings, Watches).
-
-## 9. Visualization
-- **Recharts**: Used for complex data visualization such as NDVI distribution graphs. Custom CSS layouts/grid metrics are used for simpler data.
-
-## 10. Animation
-- **Framer Motion**: Smooth entry/exit and micro-animations for UI elements.
-
-## 11. Icons
-- **Lucide**: Clean, customizable SVG icons.
-
-## 12. Dev dependencies
+## 4. Dev dependencies
 | Package | Version | Purpose |
 | --- | --- | --- |
-| `vite` | ^8.3.0 | Build tool & dev server |
-| `@vitejs/plugin-react` | ^6.1.1 | Vite plugin for React |
-| `concurrently` | ^10.0.5 | Run multiple npm scripts |
-| `oxlint` | ^1.81.0 | Fast linter |
+| `vite`, `@vitejs/plugin-react` | ^8.3.1, ^6.1.1 | Dev server (proxies `/api` → backend) and build |
+| `concurrently` | ^10.0.5 | `npm start` runs backend + frontend together |
+| `vitest` | ^4.1.11 | Unit tests (`npm test`) |
+| `oxlint` | ^1.85.0 | Lint (`npm run lint`) |
+| `netlify-cli`, `vercel` | ^27.10.0, ^60.1.3 | Optional deployment CLIs |
 
-## 13. Environment variables
-See `.env.example` for details. Variables used:
-- `VITE_API_URL` (Client) - Points to the local API server (default: `http://localhost:3001`).
-- `PORT` (Server) - Port for the backend.
-- `EARTH_ENGINE_PROJECT_ID` (Server) - Google Cloud Project ID.
-- `EARTH_ENGINE_CLIENT_EMAIL` (Server) - Service Account Email.
-- `EARTH_ENGINE_PRIVATE_KEY` (Server) - Service Account Private Key (Do NOT commit).
+`check-console.cjs` is an optional, standalone debugging script that needs `puppeteer`; it is **not** part of the app and is intentionally not a dependency (`npm i -D puppeteer` if you want to use it).
 
-## 14. External services
-- **Google Earth Engine**: Optional. Required for advanced satellite analysis.
-- **AI Provider**: Optional. Required for conversational UI and autonomous planning.
+## 5. Environment variables (`.env.local`, never committed)
+Copy `.env.example` → `.env.local`.
+
+| Variable | Required | Used by |
+| --- | --- | --- |
+| `EARTH_ENGINE_PROJECT_ID` | **yes** for satellite features | Earth Engine |
+| `EARTH_ENGINE_CLIENT_EMAIL` | **yes** (or `ee-key.json`) | Earth Engine service account |
+| `EARTH_ENGINE_PRIVATE_KEY` | **yes** (or `ee-key.json`) | Earth Engine service account (`\n` newlines) |
+| `AI_API_KEY` | optional | Gemini — AI watershed brief, Ask. Without it: "AI BRIEF UNAVAILABLE", rest works |
+| `AI_MODEL` | optional | Force a Gemini model; default = newest `gemini-*-flash` the key can use |
+| `VITE_GOOGLE_MAPS_API_KEY` | optional | Mission planner / Field (Google Maps) |
+| `PORT` | optional | Backend port (default 3001) |
+| `API_TARGET` | optional, dev | Vite proxy target (default `http://localhost:3001`) |
+
+Alternative to the three `EARTH_ENGINE_*` variables: put the service-account JSON at `./ee-key.json` (git-ignored). The service account must be registered for Earth Engine on the Cloud project.
+
+## 6. External services / datasets (no local copies — fetched on demand, cached in memory 15 min)
+Nothing is stored per river or per basin. Any searched / clicked / drawn location is resolved live:
+
+| Source | Used for | Auth |
+| --- | --- | --- |
+| Google Earth Engine — `WWF/HydroSHEDS/v1/Basins/hybas_1..12` | Watershed boundaries + hierarchy | EE service account |
+| Earth Engine — `WWF/HydroSHEDS/v1/FreeFlowingRivers` | Watershed **names** (`BAS_NAME`), drainage layer, hydrology | EE |
+| Earth Engine — `COPERNICUS/S2_SR_HARMONIZED` | True colour, NDVI, NDWI, NDMI, timeline | EE |
+| Earth Engine — `GOOGLE/DYNAMICWORLD/V1`, `USGS/SRTMGL1_003`, `NASA/SMAP/SPL4SMGP/008`, `USDOS/LSIB_SIMPLE/2017` | Land cover, terrain, soil moisture, countries | EE |
+| OpenStreetMap Nominatim + Wikidata search API | Place / river search | none (rate-limited, ~1 req/s) |
+| Wikipedia REST + Wikidata API | Watershed history and river facts | none |
+| Wikimedia Commons API | Photos with author + licence | none |
+| Google Gemini API | AI brief (server-side only) | `AI_API_KEY` |
+
+The backend needs outbound internet access to these hosts. First-time requests for very large basins (Congo, Amazon) take 30–90 s while Earth Engine computes; results are then cached.
+
+## 7. Curated demo watersheds
+The 8 demos (Narmada, Mahanadi, Subarnarekha, Bhadar, Godavari, Congo, Amazon, Nile) are **not** shipped as data. On first start the server looks each one up in HydroBASINS through Earth Engine and stores it in the local SQLite DB (`ensureSeeds` in `server/geospatial.js`). Without Earth Engine credentials the DEMO list is empty, but nothing crashes.

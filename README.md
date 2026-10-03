@@ -7,10 +7,13 @@
 ## 🚀 Quick Start (any laptop)
 
 ### Prerequisites
-- **Node.js** v20+ ([download](https://nodejs.org/))
-- **Google Earth Engine** service account key (`ee-key.json`) — place it in the project root (never commit this file)
-- **Google Maps API Key** with Places API (New) enabled
-- **Gemini API Key** (optional, for AI vision analysis)
+- **Node.js ≥ 20.19** (22 LTS recommended; `nvm use` reads `.nvmrc`) — Vite 8 will not start on older Node
+- **Google Earth Engine** service account registered for Earth Engine — either the `EARTH_ENGINE_*` variables in `.env.local` or `ee-key.json` in the project root (never commit either)
+- **Google Maps API Key** with Places API (New) enabled (Mission / Field)
+- **Gemini API Key** (optional — AI vision analysis and the AI watershed brief)
+- Outbound internet access from the backend (Earth Engine, OpenStreetMap Nominatim, Wikipedia/Wikidata, Wikimedia Commons, Gemini)
+
+Full list of packages, datasets and variables: [DEPENDENCIES.md](DEPENDENCIES.md).
 
 ### Setup
 
@@ -26,15 +29,32 @@ npm install
 cp .env.example .env.local
 # Edit .env.local with your API keys
 
-# 4. Add your Earth Engine key
-# Place ee-key.json in the root directory
+# 4. Earth Engine credentials: EARTH_ENGINE_* in .env.local  — or —  ee-key.json in the root
 
 # 5. Start everything (frontend + backend server run together)
 npm start
 ```
 
 The app will be available at **http://localhost:5173** (or next available port).
-Backend API runs on **http://localhost:3001**.
+Backend API runs on **http://localhost:3001** — Vite proxies `/api` to it.
+
+### Verify the setup
+```bash
+curl http://localhost:3001/api/earth-engine/health          # authenticated + dataset checks
+curl http://localhost:3001/api/watersheds/demos              # 8 curated demos (seeded from Earth Engine on first start)
+curl http://localhost:3001/api/earth-engine/layers/health    # per-layer + NDVI/NDWI/NDMI + timeline status (slow, ~1 min)
+```
+Then open **http://localhost:5173/watershed**. On a fresh database the first start takes ~1–2 minutes to seed the demo watersheds from HydroBASINS; the DEMO menu fills in when that finishes.
+
+### Troubleshooting
+| Symptom | Cause / fix |
+|---|---|
+| Watershed page shows 404 for `/api/watersheds/demos`, or panels crash after `git pull` | An **old backend process** is still running. Stop it (`kill $(lsof -t -i:3001)`) and run `npm start` again — the frontend hot-reloads but the backend does not. |
+| `Port 3001 is already in use` | Same as above — another backend is running. |
+| DEMO (0), fingerprint `EE_UNAVAILABLE` | Earth Engine credentials missing/invalid — check `/api/earth-engine/health`. |
+| `AI BRIEF UNAVAILABLE` / `HTTP 503` | No `AI_API_KEY`, or Gemini is temporarily overloaded — everything else keeps working; press RETRY later. |
+| Vite exits with an engine / syntax error | Node is older than 20.19 — `nvm use`. |
+| Large basins (Congo, Amazon) show LOADING for a while | Expected: Earth Engine composites thousands of scenes on the first request (30–90 s); results are cached for 15 min. |
 
 ---
 
@@ -132,14 +152,19 @@ cp .env.example .env.local
 - Mission time budget validation with safety buffer
 - GPX export for field GPS devices
 
-### 3. Watershed Intelligence Command
-**Unified view combining: observations, missions, satellite changes, evidence gaps, anomalies**
-- Real-time watershed fingerprint (NDVI, NDWI, land cover, drainage)
-- Attention items from satellite anomalies
-- Temporal ribbon of satellite observations
-- Geospatial layers (NDVI, NDWI, LULC, terrain, soil moisture)
-- Custom watershed creation (draw, import GeoJSON, pour point)
-- Action dock: Compare, Mission, Field, Evidence, Ask
+### 3. Watershed Intelligence Command (`/watershed`)
+**Search / click / draw anywhere on Earth → HydroBASINS watershed → live Earth Engine analytics.** Nothing is pre-stored per river; every basin is resolved and named live.
+- **Search** rivers, basins, places or `lat, lon` (OpenStreetMap + Wikidata) → HydroBASINS hierarchy (levels 3–8); a river point at an estuary is anchored to the same-named HydroSHEDS reach
+- **Names** come from the HydroSHEDS river network (`BAS_NAME`), e.g. "Krishna Basin", with the HydroBASIN id kept as secondary metadata
+- **Fingerprint**: NDVI, NDWI, NDMI (Sentinel-2), Dynamic World land cover, drainage — each metric with its own status and provenance
+- **Layers** (`src/shared/layerRegistry.js` is the single registry): boundary, drainage, Sentinel-2 true colour, NDVI, NDWI, NDMI, Dynamic World, SRTM terrain, SMAP soil moisture — real EE tiles, opacity, legends, truthful OFF/LOADING/ACTIVE/NO DATA/ERROR
+- **Timeline**: real Sentinel-2 acquisition dates + monthly NDVI/NDWI/NDMI (loaded independently)
+- **Attention**: same-window-last-year comparison (NDVI, NDWI, NDMI, SMAP)
+- **Watershed Intelligence panel**: overview, geography, parent/child basins, hydrology (discharge, regulation), Earth observation, land cover, temporal change, interventions, field evidence, Wikipedia history, Wikimedia Commons photos (with licence), sources, AI brief (Gemini, numbers validated against verified data)
+- **Draw** a polygon → every intersecting watershed, grouped by level, scrollable; select any
+- **Demo vs Saved** are separate: 8 curated demos; your saved watersheds persist in SQLite with exact geometry
+- Panels: drag (header), scroll, collapse, expand, close
+- Hands the active watershed to Field, Mission, Compare and Ask
 
 ### 4. Compare (Temporal Satellite Analysis)
 - Sentinel-2 MSI via Earth Engine
@@ -162,7 +187,8 @@ cp .env.example .env.local
 |---|---|
 | `field_observations` | Uploaded photos, EXIF, AI analysis, location, evidence |
 | `evidence` | Immutable evidence passports |
-| `watersheds` | Custom & resolved watershed geometries |
+| `watersheds` | Curated demos (`isDemo`), saved watersheds (`saved-…`), custom areas (`custom-…`) with geometry |
+| `interventions` | Watershed interventions + inspections |
 | `missions` | Generated mission plans with routes & stops |
 | `analyses` | Satellite analysis jobs |
 | `analysis_results` | Detection results (geometries, metrics) |
@@ -213,9 +239,9 @@ Configure environment variables in your platform dashboard.
 ## ⚠️ Known Limitations
 
 1. **AI Vision**: Uses deterministic fallback when Gemini API unavailable (404/503)
-2. **Watershed Fingerprint**: Requires simplified geometry for large basins (EE compute limits)
+2. **Large basins**: first-time analytics for continental basins (Congo, Amazon) take 30–90 s; timelines for basins > 200,000 km² use the basin bounding box for the acquisition footprint (stated in the UI)
 3. **Mission Routing**: Requires Google Maps Directions API for real routes
-4. **Large Watersheds**: Fingerprint uses simplified geometry; layers work with full geometry
+4. **Search**: Nominatim/Wikidata are public services with rate limits (~1 request/second)
 5. **Places API**: Requires "Places API (New)" enabled in Google Cloud Console
 
 ---

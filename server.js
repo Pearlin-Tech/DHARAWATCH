@@ -16,7 +16,7 @@ import { parseGeoTiffBuffer } from './server/services/geospatial/rasterParser.js
 import { initEE, getCompareData, healthCheck } from './server-gee.js';
 import { resolveWatershedByCoord, searchWatersheds } from './server/watershedService.js';
 import { registerGeoRoutes } from './server/geoRoutes.js';
-import { setStore as setGeoStore, setEEReady, computeLayerTile, ensureSeeds } from './server/geospatial.js';
+import { setStore as setGeoStore, setEEReady, isEEReady, computeLayerTile, computeFingerprint, computeTimeline, ensureSeeds } from './server/geospatial.js';
 import { WATERSHED_LAYERS } from './src/shared/layerRegistry.js';
 import { geocodePlace } from './server/geocoder.js';
 import {
@@ -263,18 +263,22 @@ app.get('/api/earth-engine/layers/health', async (req, res) => {
       type: 'Polygon',
       coordinates: [[[15.2, -4.4], [15.4, -4.4], [15.4, -4.2], [15.2, -4.2], [15.2, -4.4]]]
     };
-    const layersStatus = {};
-    for (const key of Object.keys(WATERSHED_LAYERS)) {
-      if (key === 'boundary') { layersStatus[key] = 'PASS'; continue; }
-      try {
-        const layerRes = await computeLayerTile({ geometry }, key);
-        layersStatus[key] = layerRes.available ? 'PASS' : (layerRes.reason || layerRes.dataStatus || 'FAIL');
-      } catch (e) { layersStatus[key] = `FAIL: ${e.message}`; }
-    }
-
+    const status = (r) => r.available ? 'PASS' : (r.dataStatus === 'NO_DATA' ? `NO_DATA: ${r.reason}` : (r.reason || r.dataStatus || 'FAIL'));
+    const fail = (e) => (/timed out/i.test(e.message) ? 'TIMEOUT: ' : 'FAIL: ') + e.message;
+    const layerIds = Object.keys(WATERSHED_LAYERS).filter(k => k !== 'boundary');
+    const [layerResults, fp, tl] = await Promise.all([
+      Promise.all(layerIds.map(k => computeLayerTile({ geometry }, k).then(status, fail))),
+      computeFingerprint({ geometry }).catch(e => ({ error: fail(e) })),
+      computeTimeline({ geometry }).catch(e => ({ error: fail(e) }))
+    ]);
+    const layersStatus = { boundary: 'PASS', ...Object.fromEntries(layerIds.map((k, i) => [k, layerResults[i]])) };
+    const metric = (k) => fp.error || (fp.metrics?.[k]?.status === 'AVAILABLE' ? `PASS (${fp.metrics[k].value})` : `${fp.metrics?.[k]?.status}: ${fp.metrics?.[k]?.reason || ''}`);
     res.json({
       ok: true,
-      layers: layersStatus
+      authentication: isEEReady() ? 'PASS' : 'FAIL',
+      layers: layersStatus,
+      metrics: { ndvi: metric('ndvi'), ndwi: metric('ndwi'), ndmi: metric('ndmi'), landCover: fp.error || fp.metrics?.landCover?.status },
+      timeline: tl.error || `${tl.status} (${tl.totalObservations || 0} dates)`
     });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -659,6 +663,7 @@ app.post('/api/field/upload', fieldUpload.single('photo'), async (req, res) => {
       missionId: req.body.missionId || null,
       stopId: req.body.stopId || null,
       watershedId: req.body.watershedId || null,
+      watershedName: req.body.watershedName || null,
       hash: stored.hash,
       filePath: stored.origPath,
       thumbPath: stored.thumbPath
@@ -672,30 +677,8 @@ app.post('/api/field/upload', fieldUpload.single('photo'), async (req, res) => {
         resolveWatershedForObservation(lat, lon).then(ws => {
           if (ws && ws.dataStatus === 'AVAILABLE') {
             getRow('field_observations', obsId).then(o => {
-              if (o) updateRow('field_observations', obsId, { ...o, watershedId: ws.id, watershedName: ws.name, updatedAt: new Date().toISOString() });
-            });
-          }
-        });
-        reverseGeocode(lat, lon).then(geo => {
-          if (geo) {
-            getRow('field_observations', obsId).then(o => {
-              if (o && o.location) {
-                const newLoc = { ...o.location, reverseGeocode: geo };
-                updateRow('field_observations', obsId, { ...o, location: newLoc, updatedAt: new Date().toISOString() });
-              }
-            });
-          }
-        });
-      });
-    }
-
-    // If EXIF GPS found, do reverse geocode and watershed background tasks
-    if (lat != null && lon != null) {
-      import('./server/fieldService.js').then(({ reverseGeocode, resolveWatershedForObservation }) => {
-        resolveWatershedForObservation(lat, lon).then(ws => {
-          if (ws && ws.dataStatus === 'AVAILABLE') {
-            getRow('field_observations', obsId).then(o => {
-              if (o) updateRow('field_observations', obsId, { ...o, watershedId: ws.id, watershedName: ws.name, updatedAt: new Date().toISOString() });
+              // an explicit watershed context (sent from the Watershed page) wins over GPS auto-resolution
+              if (o && !o.watershedId) updateRow('field_observations', obsId, { ...o, watershedId: ws.id, watershedName: ws.name, updatedAt: new Date().toISOString() });
             });
           }
         });
@@ -1897,6 +1880,15 @@ app.delete('/api/:resource/:id', async (req, res) => {
     res.status(500).json({ error: 'Failed to delete data' });
   }
 });
+
+// Last-resort JSON error handler: a throwing route returns { success:false, error } instead of an HTML page / crash.
+app.use((err, req, res, next) => {
+  console.error(`[API] ${req.method} ${req.originalUrl} failed:`, err?.stack || err);
+  if (res.headersSent) return next(err);
+  res.status(err?.status || 500).json({ success: false, ok: false, error: { code: err?.code || 'INTERNAL_ERROR', message: err?.message || 'Internal server error' } });
+});
+process.on('unhandledRejection', (reason) => console.error('[Process] Unhandled promise rejection:', reason?.stack || reason));
+process.on('uncaughtException', (err) => console.error('[Process] Uncaught exception (server kept alive):', err?.stack || err));
 
 if (!process.env.VERCEL && !process.env.NETLIFY) {
   const server = app.listen(PORT, () => {
