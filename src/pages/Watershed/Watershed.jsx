@@ -176,7 +176,9 @@ export default function Watershed() {
   const [attStatus, setAttStatus] = useState('IDLE');
   const [timeline, setTimeline] = useState(null);
   const [tlStatus, setTlStatus] = useState('IDLE');
-  const [availableLayers, setAvailableLayers] = useState([]);
+  // availableLayers is always the full registry — not from a deprecated API
+  const allLayerIds = Object.keys(WATERSHED_LAYERS);
+
 
   // ─── Interventions ────────────────────────────────────────────
   const [interventions, setInterventions] = useState([]);
@@ -190,8 +192,12 @@ export default function Watershed() {
   const [maxZ, setMaxZ] = useState(30);
 
   // ─── Map layer state (holds tile URLs and opacity) ────────────
+  // localLayerActive: local on/off state per layer (separate from GlobalContext activeLayers)
+  const [localLayerActive, setLocalLayerActive] = useState({}); // { layerId: bool }
   const [layerState, setLayerState] = useState({});     // { layerId: { opacity, tileUrl, status } }
   const [layerLoading, setLayerLoading] = useState({}); // { layerId: bool }
+  const layerAbortRefs = useRef({});                    // per-layer abort controllers
+
 
   // ─── Search / Resolve UI ──────────────────────────────────────
   const [searchQuery, setSearchQuery] = useState('');
@@ -492,13 +498,13 @@ export default function Watershed() {
 
     // Load fingerprint
     setFpStatus('LOADING');
-    withTimeout(getFingerprint(wsCtx.id, wsCtx.geometry, signal), 30000, 'Fingerprint timeout')
+    withTimeout(getFingerprint(wsCtx, signal), 30000, 'Fingerprint timeout')
       .then(fp => { setFingerprint(fp); setFpStatus(fp?.status === 'NO_IMAGERY' ? 'NO DATA' : 'AVAILABLE'); })
       .catch(e => { if (e.name !== 'AbortError') setFpStatus('ERROR'); });
 
     // Load attention
     setAttStatus('LOADING');
-    withTimeout(getAttention(wsCtx.id, wsCtx.geometry, signal), 30000, 'Attention timeout')
+    withTimeout(getAttention(wsCtx, signal), 30000, 'Attention timeout')
       .then(att => { 
         setAttention(att); 
         setAttStatus(att?.status === 'INSUFFICIENT_DATA' ? 'INSUFFICIENT DATA' : (att?.status === 'NO_ATTENTION_ITEMS' ? 'NO DATA' : (att?.dataStatus || 'AVAILABLE'))); 
@@ -507,17 +513,15 @@ export default function Watershed() {
 
     // Load timeline
     setTlStatus('LOADING');
-    withTimeout(getTimeline(wsCtx.id, wsCtx.geometry, signal), 60000, 'Timeline timeout')
+    withTimeout(getTimeline(wsCtx, signal), 60000, 'Timeline timeout')
       .then(tl => { 
         setTimeline(tl); 
-        setTlStatus(tl?.status === 'NO_IMAGERY' ? 'NO DATA' : (tl?.dataStatus || 'AVAILABLE')); 
+        setTlStatus(tl?.status === 'NO_IMAGERY' ? 'NO DATA' : (tl?.status || 'AVAILABLE')); 
       })
       .catch(e => { if (e.name !== 'AbortError') setTlStatus('ERROR'); });
 
-    // Load available layers
-    getAvailableLayers(wsCtx.id, signal)
-      .then(data => { setAvailableLayers(data?.available || []); })
-      .catch(() => {});
+    // Load available layers (removed since we always load all layers)
+
 
     // Load interventions
     setIntStatus('LOADING');
@@ -662,32 +666,42 @@ export default function Watershed() {
 
   // ─── Layer management ─────────────────────────────────────────
   const toggleLayer = useCallback((layerId) => {
-    setActiveLayers(prev => ({ ...prev, [layerId]: !prev[layerId] }));
-  }, [setActiveLayers]);
+    setLocalLayerActive(prev => ({ ...prev, [layerId]: !prev[layerId] }));
+  }, []);
 
-  // Sync map layers when global activeLayers changes
+  // Sync map layers when localLayerActive changes
   useEffect(() => {
-    if (!wsCtx || wsCtx.dataStatus === 'UNAVAILABLE') return;
+    if (!wsCtx || wsCtx.dataStatus === 'UNAVAILABLE' || !map.current) return;
 
     const syncLayers = async () => {
-      // Create a copy of the keys to check
-      const layersToCheck = availableLayers.map(l => l.id);
-      if (!layersToCheck.includes('boundary')) layersToCheck.push('boundary');
-      
-      for (const layerId of layersToCheck) {
+      // Ensure we only try to add layers if the map style is loaded
+      if (!map.current.loaded() && !map.current.isStyleLoaded()) {
+        setTimeout(syncLayers, 500); // retry
+        return;
+      }
+
+      for (const layerId of allLayerIds) {
         if (layerId === 'boundary') continue; // Handled by wsCtx natively
 
-        const isActive = activeLayers[layerId];
+        const isActive = localLayerActive[layerId];
         const isLoaded = !!layerState[layerId];
         const mapLayerId = `ee-layer-${layerId}`;
 
         if (isActive && !isLoaded && !layerLoading[layerId]) {
           setLayerLoading(prev => ({ ...prev, [layerId]: true }));
+          
+          // Abort previous request for this layer if any
+          if (layerAbortRefs.current[layerId]) layerAbortRefs.current[layerId].abort();
+          layerAbortRefs.current[layerId] = new AbortController();
+          const signal = layerAbortRefs.current[layerId].signal;
+
           try {
-            const result = await getLayerTile(wsCtx.id, layerId, wsCtx.geometry);
+            // FIX: getLayerTile signature is (ctx, layerId, signal)
+            const result = await getLayerTile(wsCtx, layerId, signal);
+            
             if (result?.available && result.tileUrl) {
               const m = map.current;
-              if (m) {
+              if (m && m.isStyleLoaded()) {
                 if (m.getLayer(mapLayerId)) m.removeLayer(mapLayerId);
                 if (m.getSource(mapLayerId)) m.removeSource(mapLayerId);
                 m.addSource(mapLayerId, { type: 'raster', tiles: [result.tileUrl], tileSize: 256 });
@@ -709,16 +723,18 @@ export default function Watershed() {
               }));
             }
           } catch (err) {
-            setLayerState(prev => ({
-              ...prev,
-              [layerId]: { status: 'ERROR', reason: err.message }
-            }));
+            if (err.name !== 'AbortError') {
+              setLayerState(prev => ({
+                ...prev,
+                [layerId]: { status: 'ERROR', reason: err.message }
+              }));
+            }
           } finally {
             setLayerLoading(prev => { const n = { ...prev }; delete n[layerId]; return n; });
           }
         } else if (!isActive && isLoaded) {
           const m = map.current;
-          if (m) {
+          if (m && m.isStyleLoaded()) {
             if (m.getLayer(mapLayerId)) m.removeLayer(mapLayerId);
             if (m.getSource(mapLayerId)) m.removeSource(mapLayerId);
           }
@@ -727,7 +743,8 @@ export default function Watershed() {
       }
     };
     syncLayers();
-  }, [activeLayers, availableLayers, wsCtx]);
+  }, [localLayerActive, allLayerIds, wsCtx]);
+
 
   const setLayerOpacity = (layerId, opacity) => {
     const mapLayerId = `ee-layer-${layerId}`;
@@ -1246,9 +1263,8 @@ export default function Watershed() {
   // ─── Grouped layers ───────────────────────────────────────────
   const groupedLayers = useMemo(() => {
     const groups = {};
-    const layerList = availableLayers.length > 0
-      ? availableLayers
-      : Object.entries(WATERSHED_LAYERS).map(([id, meta]) => ({ id, ...meta }));
+    const layerList = Object.entries(WATERSHED_LAYERS).map(([id, meta]) => ({ id, ...meta }));
+
     layerList.forEach(l => {
       const g = l.group || 'OTHER';
       if (!groups[g]) groups[g] = [];
@@ -1564,8 +1580,8 @@ export default function Watershed() {
                   <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 8 }}>
                     {drawAnalysis.candidates.length} WATERSHED{drawAnalysis.candidates.length > 1 ? 'S' : ''} FOUND
                   </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
-                    {drawAnalysis.candidates.slice(0, 6).map((c, i) => (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12, maxHeight: 300, overflowY: 'auto', paddingRight: 4 }}>
+                    {drawAnalysis.candidates.map((c, i) => (
                       <button key={c.id || i}
                         style={{ background: 'rgba(6,182,212,0.08)', border: '1px solid rgba(6,182,212,0.3)', borderRadius: 6, padding: '8px 10px', cursor: 'pointer', textAlign: 'left', color: '#e2e8f0', transition: 'background 0.15s' }}
                         onMouseEnter={e => e.currentTarget.style.background = 'rgba(6,182,212,0.2)'}
@@ -1631,16 +1647,17 @@ export default function Watershed() {
         {fingerprint && (
           <div className="fingerprint-container">
             {[
-              { key: 'water', label: 'WATER', color: '#3b82f6', barWidth: ndwiToWidth(fingerprint.water?.value), cursor: 'ndwi' },
-              { key: 'vegetation', label: 'VEGETATION', color: '#10b981', barWidth: ndviToWidth(fingerprint.vegetation?.value), cursor: 'ndvi' },
-              { key: 'land', label: 'LAND COVER', color: '#d97706', barWidth: 0, cursor: 'lulc' },
+              { key: 'ndwi', label: 'WATER', color: '#3b82f6', barWidth: ndwiToWidth(fingerprint?.metrics?.ndwi?.value), cursor: 'ndwi' },
+              { key: 'ndvi', label: 'VEGETATION', color: '#10b981', barWidth: ndviToWidth(fingerprint?.metrics?.ndvi?.value), cursor: 'ndvi' },
+
+              { key: 'landCover', label: 'LAND COVER', color: '#d97706', barWidth: 0, cursor: 'lulc' },
               { key: 'drainage', label: 'DRAINAGE', color: '#6366f1', barWidth: 0, cursor: 'drainage' },
               { key: 'interventions', label: 'INTERVENTIONS', color: '#8b5cf6', barWidth: 0 },
               { key: 'fieldEvidence', label: 'FIELD EVIDENCE', color: '#38bdf8', barWidth: 0 },
               { key: 'temporalChange', label: 'TEMPORAL CHANGE', color: '#f59e0b', barWidth: 0 },
             ].map(({ key, label, color, barWidth, cursor }) => {
-              const row = fingerprint[key] || {};
-              const hasValue = row.status && row.status !== 'ANALYSIS PENDING' && row.status !== 'PENDING ANALYSIS' && row.status !== 'NOT CONNECTED';
+              const row = (fingerprint.metrics && fingerprint.metrics[key]) || {};
+              const hasValue = row.status && row.status !== 'ANALYSIS PENDING' && row.status !== 'PENDING ANALYSIS' && row.status !== 'NOT CONNECTED' && row.status !== 'UNAVAILABLE';
               return (
                 <div
                   key={key}
@@ -1655,7 +1672,12 @@ export default function Watershed() {
                     )}
                   </div>
                   <span className={hasValue ? 'fp-value' : 'fp-pending'}>
-                    {hasValue ? row.status : (row.dataStatus === 'ERROR' ? 'ERROR' : 'PENDING')}
+                    {!hasValue ? (row.status === 'ERROR' ? 'ERROR' : (row.status || 'PENDING')) : (
+                      key === 'ndvi' || key === 'ndwi' ? (row.value !== undefined ? row.value.toFixed(2) : row.status) :
+                      key === 'landCover' ? (row.top?.name ? row.top.name.toUpperCase() : row.status) :
+                      key === 'drainage' ? (row.segments !== undefined ? `${row.segments} SEGMENTS` : row.status) :
+                      row.status
+                    )}
                   </span>
                 </div>
               );
@@ -1730,8 +1752,9 @@ export default function Watershed() {
             {layerList.map(layer => {
               const layerId = layer.id;
               // Check if globally active
-              const isActive = !!activeLayers[layerId] || (layerId === 'boundary' && !!wsCtx?.geometry);
+              const isActive = !!localLayerActive[layerId] || (layerId === 'boundary' && !!wsCtx?.geometry);
               const isLoading = layerLoading[layerId];
+
               // Local state for opacity/status
               const currentLayerState = layerState[layerId] || {};
               const meta = WATERSHED_LAYERS[layerId] || {};

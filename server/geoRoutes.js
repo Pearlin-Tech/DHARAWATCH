@@ -67,8 +67,16 @@ export function registerGeoRoutes(app, store) {
         return res.status(404).json({ ok: false, error: { code: 'NO_WATERSHED_FOUND', message: 'No HydroSHEDS watershed intersects the requested location.' }, location: { lat, lon } });
       }
       const countries = await countriesFor({ type: 'Point', coordinates: [lon, lat] });
+      const displayName = await reverseGeocode(lat, lon).catch(() => null);
+      if (displayName) {
+        r.candidates.forEach(c => {
+          c.name = `${displayName} Watershed`;
+          c.displayName = `${displayName} Watershed (L${c.level})`;
+        });
+      }
+
       res.json({
-        ok: true, location: { lat, lon, countries },
+        ok: true, location: { lat, lon, countries, displayName },
         candidates: r.candidates, failedLevels: r.failedLevels,
         recommendedId: (r.candidates.find(c => c.level === 7) || r.candidates[r.candidates.length - 1]).id
       });
@@ -83,9 +91,21 @@ export function registerGeoRoutes(app, store) {
       if (!v.ok) return bad(res, 'INVALID_GEOMETRY', v.message);
       const r = await intersectPolygon(v.geometry);
       const countries = await countriesFor(v.geometry);
+      
+      let displayName = null;
+      if (r.drawn.centroid) {
+        displayName = await reverseGeocode(r.drawn.centroid.lat, r.drawn.centroid.lon).catch(() => null);
+        if (displayName) {
+          r.candidates.forEach(c => {
+            c.name = `${displayName} Watershed`;
+            c.displayName = `${displayName} Watershed (L${c.level})`;
+          });
+        }
+      }
+
       res.json({
         ok: true,
-        drawn: { ...r.drawn, countries },
+        drawn: { ...r.drawn, countries, displayName },
         candidates: r.candidates,
         recommendedId: r.recommendedId || null,
         status: r.candidates.length === 0 ? 'NO_WATERSHED_FOUND' : 'FOUND'
