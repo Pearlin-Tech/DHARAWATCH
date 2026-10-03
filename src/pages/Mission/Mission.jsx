@@ -1,50 +1,35 @@
+/**
+ * DHARAWATCH — Intervention Evidence Review
+ *
+ * Route: /mission
+ *
+ * Review field evidence, satellite change and terrain context for watershed interventions.
+ */
+
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { useGoogleMaps } from '../../hooks/useGoogleMaps';
+import { useLocation } from 'react-router-dom';
 import {
-  Crosshair, Camera, Droplets, Clock, Target, Car,
-  ArrowRight, ShieldCheck, Download, Save,
-  Play, CheckCircle2, ChevronDown, Layers, MapPin,
-  ZoomIn, ZoomOut, Maximize, AlertTriangle, Check,
-  Search, X, Route, Timer, Footprints, Shield,
-  Plus, Pen, Trash2, Eye, EyeOff, Flag
+  Camera, Droplets, Mountain, Satellite, ShieldCheck, CheckCircle2,
+  AlertTriangle, Clock, MapPin, Layers, ZoomIn, ZoomOut, Maximize,
+  Info, Eye, ChevronDown, Check, X, Plus, Upload, Compass, Filter,
+  Share2, ArrowRight, RefreshCw, Sliders, ExternalLink, Bookmark
 } from 'lucide-react';
 import AppNavigation from '../../components/AppNavigation';
-import { useGlobalContext } from '../../context/GlobalContext';
-import { useAppContext } from '../../components/UniversalContextBar';
 import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { 
-  listMissions, getMission, createMission, updateMission, deleteMission,
-  listMissionStops, createMissionStop, updateMissionStop, deleteMissionStop,
-  MISSION_STATUSES, MISSION_STOP_STATUSES, MISSION_STOP_TYPES,
-  getMissionStatusInfo, getMissionStopStatusInfo, getMissionStopTypeInfo
-} from '../../services/missionClient';
+import {
+  fetchReviewWatersheds,
+  fetchReviewInterventions,
+  fetchInterventionDetail,
+  addFieldPhoto,
+  toggleReviewStatus,
+  getStatusBadge
+} from '../../services/interventionReviewService';
 import './Mission.css';
-// ─── Constants ──────────────────────────────────────────────────────────────
-const WINDOW_OPTIONS = [
-  { label: '1 HOUR', minutes: 60 },
-  { label: '2 HOURS', minutes: 120 },
-  { label: '3 HOURS', minutes: 180 },
-  { label: '4 HOURS', minutes: 240 },
-  { label: '5 HOURS', minutes: 300 },
-  { label: '6 HOURS', minutes: 360 },
-  { label: '8 HOURS', minutes: 480 },
-];
 
-const STOP_OPTIONS = [1, 2, 3, 4, 5, 6, 8, 10];
-
-const TRANSIT_OPTIONS = [
-  { label: 'Vehicle + Walking', value: 'DRIVING_WALKING' },
-  { label: 'Driving Only', value: 'DRIVING' },
-  { label: 'Walking', value: 'WALKING' },
-  { label: 'Cycling', value: 'BICYCLING' },
-];
-
-// ─── Dropdown Portal ────────────────────────────────────────────────────────
-function Dropdown({ anchorRef, open, onClose, children, width = 280 }) {
+// ─── Dropdown Helper ─────────────────────────────────────────────────────────
+function Dropdown({ anchorRef, open, onClose, children, width = 320 }) {
   const ref = useRef(null);
-
   useEffect(() => {
     if (!open) return;
     const handler = (e) => {
@@ -59,23 +44,16 @@ function Dropdown({ anchorRef, open, onClose, children, width = 280 }) {
 
   if (!open || !anchorRef.current) return null;
   const rect = anchorRef.current.getBoundingClientRect();
-
   return (
     <div
       ref={ref}
+      className="review-dropdown-portal"
       style={{
         position: 'fixed',
         top: rect.bottom + 6,
         left: rect.left,
         width: Math.max(width, rect.width),
-        zIndex: 99999,
-        background: 'rgba(9,15,28,0.97)',
-        backdropFilter: 'blur(20px)',
-        border: '1px solid rgba(56,189,248,0.3)',
-        borderRadius: 8,
-        boxShadow: '0 8px 40px rgba(0,0,0,0.7), 0 0 0 1px rgba(56,189,248,0.08)',
-        animation: 'ddFadeIn 0.15s ease',
-        overflow: 'hidden',
+        zIndex: 99999
       }}
     >
       {children}
@@ -83,1315 +61,1299 @@ function Dropdown({ anchorRef, open, onClose, children, width = 280 }) {
   );
 }
 
-// ─── Searchable Watershed Selector ──────────────────────────────────────────
-function WatershedSelector({ value, onChange }) {
-  const anchorRef = useRef(null);
-  const inputRef = useRef(null);
-  const [open, setOpen] = useState(false);
-  const [q, setQ] = useState('');
-  const [results, setResults] = useState([]);
+export default function InterventionEvidenceReview() {
+  const location = useLocation();
+
+  // ─── State: Control Bar ─────────────────────────────────────────────────────
+  const [watersheds, setWatersheds] = useState([]);
+  const [selectedWatershed, setSelectedWatershed] = useState(null);
+  const [interventions, setInterventions] = useState([]);
+  const [selectedInterventionId, setSelectedInterventionId] = useState(null);
+  const [interventionDetail, setInterventionDetail] = useState(null);
+
+  // Time periods
+  const [beforePeriod, setBeforePeriod] = useState('2022-05 (Baseline)');
+  const [afterPeriod, setAfterPeriod] = useState('2024-09 (Current)');
+
+  // Dropdown toggles
+  const [wsDropdownOpen, setWsDropdownOpen] = useState(false);
+  const [intDropdownOpen, setIntDropdownOpen] = useState(false);
+  const [beforeDropdownOpen, setBeforeDropdownOpen] = useState(false);
+  const [afterDropdownOpen, setAfterDropdownOpen] = useState(false);
+
+  const wsAnchorRef = useRef(null);
+  const intAnchorRef = useRef(null);
+  const beforeAnchorRef = useRef(null);
+  const afterAnchorRef = useRef(null);
+
+  // Active Tab: 'EVIDENCE' | 'CHANGE' | 'TERRAIN'
+  const [activeTab, setActiveTab] = useState('EVIDENCE');
+
+  // Slider position for Before/After satellite comparison (0 to 100%)
+  const [sliderPos, setSliderPos] = useState(50);
+  const [isDraggingSlider, setIsDraggingSlider] = useState(false);
+
+  // Map layer toggles
+  const [layers, setLayers] = useState({
+    interventions: true,
+    fieldPhotos: true,
+    drainage: true,
+    demElevation: false,
+    slope: false,
+    flowAccumulation: false
+  });
+  const [layerMenuOpen, setLayerMenuOpen] = useState(false);
+  const layerAnchorRef = useRef(null);
+
+  // Modals & Notifications
+  const [selectedPhotoModal, setSelectedPhotoModal] = useState(null);
+  const [addEvidenceModalOpen, setAddEvidenceModalOpen] = useState(false);
+  const [toastMessage, setToastMessage] = useState(null);
   const [loading, setLoading] = useState(false);
-  const debounceRef = useRef(null);
+  const [analyzing, setAnalyzing] = useState(false);
 
-  const search = useCallback(async (query) => {
-    if (!query || query.length < 2) { setResults([]); return; }
-    setLoading(true);
-    try {
-      const res = await fetch('/api/mission/watersheds/search?q=' + encodeURIComponent(query));
-      const data = await res.json();
-      setResults(Array.isArray(data) ? data : []);
-    } catch { setResults([]); }
-    setLoading(false);
-  }, []);
+  // Add photo form state
+  const [newPhotoForm, setNewPhotoForm] = useState({
+    title: '',
+    type: 'Verification Audit',
+    photographer: 'Field Officer',
+    notes: '',
+    url: 'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1200&q=80',
+    lat: '',
+    lng: ''
+  });
 
+  // MapLibre references
+  const mapContainerRef = useRef(null);
+  const mapRef = useRef(null);
+  const markersRef = useRef([]);
+
+  const showToast = (msg) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3500);
+  };
+
+  // ─── 1. Initial Load: Watersheds ──────────────────────────────────────────
   useEffect(() => {
-    clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => search(q), 350);
-  }, [q, search]);
-
-  useEffect(() => {
-    if (open && inputRef.current) setTimeout(() => inputRef.current?.focus(), 80);
-  }, [open]);
-
-  return (
-    <>
-      <div
-        ref={anchorRef}
-        className="config-box"
-        onClick={() => setOpen(o => !o)}
-        style={{ minWidth: 220, cursor: 'pointer' }}
-      >
-        <div className="cb-label"><Droplets size={11} /> TARGET WATERSHED</div>
-        <div className="cb-val">
-          <span style={{ color: value ? '#fff' : '#6b7280', fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 160 }}>
-            {value ? value.name : 'SELECT TARGET'}
-          </span>
-          <ChevronDown size={13} color="#6b7280" style={{ flexShrink: 0, transition: 'transform 0.18s', transform: open ? 'rotate(180deg)' : '' }} />
-        </div>
-      </div>
-      <Dropdown anchorRef={anchorRef} open={open} onClose={() => setOpen(false)} width={320}>
-        <div style={{ padding: '10px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 5, padding: '6px 10px' }}>
-            <Search size={13} color="#6b7280" />
-            <input
-              ref={inputRef}
-              value={q}
-              onChange={e => setQ(e.target.value)}
-              placeholder="Search watershed..."
-              style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: '#fff', fontSize: 12, fontFamily: 'Inter, sans-serif' }}
-            />
-            {q && <X size={13} color="#6b7280" style={{ cursor: 'pointer' }} onClick={() => setQ('')} />}
-          </div>
-        </div>
-        <div style={{ maxHeight: 260, overflowY: 'auto' }}>
-          {loading && (
-            <div style={{ padding: '12px 16px', color: '#6b7280', fontFamily: 'monospace', fontSize: 11, textAlign: 'center' }}>
-              Searching...
-            </div>
-          )}
-          {!loading && results.length === 0 && q.length >= 2 && (
-            <div style={{ padding: '12px 16px', color: '#6b7280', fontFamily: 'monospace', fontSize: 11 }}>
-              No watersheds found for "{q}"
-            </div>
-          )}
-          {!loading && q.length < 2 && (
-            <div style={{ padding: '12px 16px', color: '#4b5563', fontFamily: 'monospace', fontSize: 10 }}>
-              TYPE TO SEARCH — e.g. Narmada, Sardar Sarovar, Tapi
-            </div>
-          )}
-          {results.map((r, i) => (
-            <div
-              key={i}
-              onClick={() => { onChange(r); setOpen(false); setQ(''); }}
-              style={{
-                padding: '10px 16px', cursor: 'pointer', borderBottom: '1px solid rgba(255,255,255,0.04)',
-                background: value?.name === r.name ? 'rgba(56,189,248,0.08)' : 'transparent',
-                transition: 'background 0.15s'
-              }}
-              onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}
-              onMouseLeave={e => e.currentTarget.style.background = value?.name === r.name ? 'rgba(56,189,248,0.08)' : 'transparent'}
-            >
-              <div style={{ color: '#fff', fontSize: 12, fontFamily: 'Inter', fontWeight: 600, marginBottom: 2 }}>{r.name}</div>
-              {r.river && <div style={{ color: '#6b7280', fontSize: 10, fontFamily: 'monospace' }}>{r.river}{r.state ? ` · ${r.state}` : ''}</div>}
-            </div>
-          ))}
-        </div>
-      </Dropdown>
-    </>
-  );
-}
-
-// ─── Searchable Origin Selector ─────────────────────────────────────────────
-function OriginSelector({ value, onChange }) {
-  const anchorRef = useRef(null);
-  const inputRef = useRef(null);
-  const [open, setOpen] = useState(false);
-  const [q, setQ] = useState('');
-  const [results, setResults] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const debounceRef = useRef(null);
-
-  const search = useCallback(async (query) => {
-    if (!query || query.length < 3) { setResults([]); return; }
-    setLoading(true);
-    try {
-      const res = await fetch('/api/mission/origins/search?q=' + encodeURIComponent(query));
-      const data = await res.json();
-      setResults(Array.isArray(data) ? data : []);
-    } catch { setResults([]); }
-    setLoading(false);
-  }, []);
-
-  useEffect(() => {
-    clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => search(q), 400);
-  }, [q, search]);
-
-  useEffect(() => {
-    if (open && inputRef.current) setTimeout(() => inputRef.current?.focus(), 80);
-  }, [open]);
-
-  const handleSelect = async (r) => {
-    // If it has an id, resolve coordinates
-    if (r.id && !r.lat) {
+    let unmounted = false;
+    async function loadInitial() {
+      setLoading(true);
       try {
-        const res = await fetch('/api/mission/origins/resolve?placeId=' + encodeURIComponent(r.id));
-        const data = await res.json();
-        if (data && data.lat) { onChange(data); setOpen(false); setQ(''); return; }
-      } catch { }
-    }
-    onChange({ ...r, lat: r.lat || 22.8, lng: r.lng || 86.18 });
-    setOpen(false); setQ('');
-  };
-
-  return (
-    <>
-      <div
-        ref={anchorRef}
-        className="config-box"
-        onClick={() => setOpen(o => !o)}
-        style={{ minWidth: 180, cursor: 'pointer' }}
-      >
-        <div className="cb-label"><Target size={11} /> ORIGIN BASE</div>
-        <div className="cb-val">
-          <span style={{ color: value ? '#fff' : '#6b7280', fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>
-            {value ? value.name : 'SELECT ORIGIN'}
-          </span>
-          <ChevronDown size={13} color="#6b7280" style={{ flexShrink: 0, transition: 'transform 0.18s', transform: open ? 'rotate(180deg)' : '' }} />
-        </div>
-      </div>
-      <Dropdown anchorRef={anchorRef} open={open} onClose={() => setOpen(false)} width={300}>
-        <div style={{ padding: '10px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 5, padding: '6px 10px' }}>
-            <Search size={13} color="#6b7280" />
-            <input
-              ref={inputRef}
-              value={q}
-              onChange={e => setQ(e.target.value)}
-              placeholder="City, facility or base name..."
-              style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: '#fff', fontSize: 12, fontFamily: 'Inter, sans-serif' }}
-            />
-            {q && <X size={13} color="#6b7280" style={{ cursor: 'pointer' }} onClick={() => setQ('')} />}
-          </div>
-        </div>
-        <div style={{ maxHeight: 240, overflowY: 'auto' }}>
-          {loading && <div style={{ padding: '12px 16px', color: '#6b7280', fontFamily: 'monospace', fontSize: 11, textAlign: 'center' }}>Searching...</div>}
-          {!loading && results.length === 0 && q.length >= 3 && (
-            <div style={{ padding: '12px 16px', color: '#6b7280', fontFamily: 'monospace', fontSize: 11 }}>No results. Using manual fallback.</div>
-          )}
-          {!loading && q.length < 3 && (
-            <div style={{ padding: '12px 16px', color: '#4b5563', fontFamily: 'monospace', fontSize: 10 }}>TYPE TO SEARCH — e.g. Bharuch, Vadodara</div>
-          )}
-          {results.map((r, i) => (
-            <div key={i} onClick={() => handleSelect(r)}
-              style={{ padding: '10px 16px', cursor: 'pointer', borderBottom: '1px solid rgba(255,255,255,0.04)', transition: 'background 0.15s' }}
-              onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}
-              onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-            >
-              <div style={{ color: '#fff', fontSize: 12, fontFamily: 'Inter', fontWeight: 600, marginBottom: 2 }}>{r.name}</div>
-              {r.address && <div style={{ color: '#6b7280', fontSize: 10, fontFamily: 'monospace' }}>{r.address}</div>}
-            </div>
-          ))}
-          {!loading && q.length >= 3 && results.length === 0 && (
-            <div
-              onClick={() => { onChange({ type: 'MANUAL', name: q, lat: 22.8, lng: 86.18 }); setOpen(false); setQ(''); }}
-              style={{ padding: '10px 16px', cursor: 'pointer', color: '#38bdf8', fontSize: 11, fontFamily: 'monospace', borderTop: '1px solid rgba(255,255,255,0.06)' }}
-            >
-              + Use "{q}" as manual origin
-            </div>
-          )}
-        </div>
-      </Dropdown>
-    </>
-  );
-}
-
-// ─── Simple Dropdown Selector ────────────────────────────────────────────────
-function SimpleSelector({ label, icon: Icon, value, display, options, onChange }) {
-  const anchorRef = useRef(null);
-  const [open, setOpen] = useState(false);
-
-  return (
-    <>
-      <div ref={anchorRef} className="config-box" onClick={() => setOpen(o => !o)} style={{ cursor: 'pointer', minWidth: 140 }}>
-        <div className="cb-label">{Icon && <Icon size={11} />} {label}</div>
-        <div className="cb-val">
-          <span style={{ fontSize: 13, fontWeight: 600 }}>{display}</span>
-          <ChevronDown size={13} color="#6b7280" style={{ flexShrink: 0, transition: 'transform 0.18s', transform: open ? 'rotate(180deg)' : '' }} />
-        </div>
-      </div>
-      <Dropdown anchorRef={anchorRef} open={open} onClose={() => setOpen(false)} width={180}>
-        {options.map((opt, i) => (
-          <div
-            key={i}
-            onClick={() => { onChange(opt); setOpen(false); }}
-            style={{
-              padding: '10px 16px', cursor: 'pointer', fontFamily: 'monospace', fontSize: 11, color: '#fff',
-              background: opt.value === value || opt.label === display ? 'rgba(56,189,248,0.1)' : 'transparent',
-              borderBottom: '1px solid rgba(255,255,255,0.04)', transition: 'background 0.15s',
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between'
-            }}
-            onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}
-            onMouseLeave={e => e.currentTarget.style.background = opt.value === value || opt.label === display ? 'rgba(56,189,248,0.1)' : 'transparent'}
-          >
-            {opt.label}
-            {(opt.value === value || opt.label === display) && <Check size={11} color="#38bdf8" />}
-          </div>
-        ))}
-      </Dropdown>
-    </>
-  );
-}
-
-// ─── Generating Stage Tracker ────────────────────────────────────────────────
-const GEN_STAGES = [
-  'RESOLVING TARGET',
-  'RETRIEVING SATELLITE CONTEXT',
-  'FINDING EVIDENCE GAPS',
-  'BUILDING FIELD CANDIDATES',
-  'OPTIMIZING ROUTE',
-  'VALIDATING TIME WINDOW',
-];
-
-function GeneratingOverlay({ stage }) {
-  return (
-    <div style={{
-      position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-      background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', zIndex: 200, flexDirection: 'column', gap: 24
-    }}>
-      <div style={{ fontFamily: 'monospace', fontSize: 10, color: '#38bdf8', letterSpacing: '0.15em', marginBottom: 8 }}>
-        DHARAWATCH MISSION ENGINE
-      </div>
-      {GEN_STAGES.map((s, i) => {
-        const done = i < stage;
-        const active = i === stage;
-        return (
-          <div key={s} style={{ display: 'flex', alignItems: 'center', gap: 12, opacity: done || active ? 1 : 0.25, transition: 'opacity 0.3s' }}>
-            <div style={{ width: 18, height: 18, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: done ? '#10b981' : active ? 'transparent' : 'rgba(255,255,255,0.05)', border: active ? '2px solid #38bdf8' : done ? 'none' : '1px solid rgba(255,255,255,0.1)' }}>
-              {done ? <Check size={10} color="#000" /> : active ? <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#38bdf8', animation: 'pulse 1s ease infinite' }} /> : null}
-            </div>
-            <span style={{ fontFamily: 'monospace', fontSize: 11, color: done ? '#10b981' : active ? '#fff' : '#4b5563', fontWeight: active ? 700 : 400 }}>{s}</span>
-            {done && <span style={{ color: '#10b981', fontSize: 10, fontFamily: 'monospace' }}>✓</span>}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// ─── Format helpers ───────────────────────────────────────────────────────────
-function fmtMin(min) {
-  if (!min && min !== 0) return '—';
-  const h = Math.floor(min / 60);
-  const m = min % 60;
-  if (h === 0) return `${m}m`;
-  if (m === 0) return `${h}h`;
-  return `${h}h ${m}m`;
-}
-
-// ─── Priority badge ───────────────────────────────────────────────────────────
-function PriBadge({ p }) {
-  const color = p === 'CRITICAL' ? '#f59e0b' : p === 'HIGH' ? '#38bdf8' : p === 'MED' ? '#a78bfa' : '#6b7280';
-  return (
-    <span style={{ fontSize: 9, fontFamily: 'monospace', fontWeight: 700, padding: '2px 6px', borderRadius: 3, border: `1px solid ${color}`, color, background: `${color}18` }}>
-      {p}
-    </span>
-  );
-}
-
-// ─── Score bars ───────────────────────────────────────────────────────────────
-function ScoreBars({ score }) {
-  const filled = Math.round((score / 100) * 5);
-  return (
-    <div style={{ display: 'flex', gap: 3 }}>
-      {[...Array(5)].map((_, i) => (
-        <div key={i} style={{ width: 10, height: 4, borderRadius: 2, background: i < filled ? '#38bdf8' : 'rgba(255,255,255,0.1)' }} />
-      ))}
-    </div>
-  );
-}
-
-// ─── GPX export helper ────────────────────────────────────────────────────────
-function exportGPX(mission, candidates, selectedIds) {
-  const stops = selectedIds.map(id => candidates.find(c => c.id === id)).filter(Boolean);
-  const date = new Date().toISOString();
-  const wpts = stops.map((s, i) => `
-  <wpt lat="${s.coords[1]}" lon="${s.coords[0]}">
-    <name>STOP ${String(i + 1).padStart(2, '0')} - ${s.title}</name>
-    <desc>${s.reason}</desc>
-    <type>${s.type || 'OBSERVATION'}</type>
-  </wpt>`).join('');
-
-  const rtePoints = stops.map(s => `<rtept lat="${s.coords[1]}" lon="${s.coords[0]}"><name>${s.title}</name></rtept>`).join('');
-
-  const gpx = `<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="DHARAWATCH Mission Engine" xmlns="http://www.topografix.com/GPX/1/1">
-  <metadata>
-    <name>DHARAWATCH Field Mission</name>
-    <time>${date}</time>
-  </metadata>
-  ${wpts}
-  <rte>
-    <name>DHARAWATCH Mission Route</name>
-    ${rtePoints}
-  </rte>
-</gpx>`;
-
-  const blob = new Blob([gpx], { type: 'application/gpx+xml' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = `dharawatch_mission_${Date.now()}.gpx`; a.click();
-  URL.revokeObjectURL(url);
-}
-
-// ─── Main Component ───────────────────────────────────────────────────────────
-export default function Mission() {
-  const googleMapsApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
-  const { loaded: mapsLoaded, error: mapsError } = useGoogleMaps(googleMapsApiKey);
-
-  const navigate = useNavigate();
-  const { setCurrentMission, setCurrentWatershed } = useAppContext();
-  const mapContainer = useRef(null);
-  const map = useRef(null);
-  const markersRef = useRef({});
-  const originMarkerRef = useRef(null);
-  const routeLayerRef = useRef(null);
-
-  // Form state — typed values
-  const [target, setTarget] = useState(null);
-  const [origin, setOrigin] = useState(null);
-  const [windowOpt, setWindowOpt] = useState(WINDOW_OPTIONS[4]);
-  const [budget, setBudget] = useState(6);
-  const [transitOpt, setTransitOpt] = useState(TRANSIT_OPTIONS[0]);
-  const [formErrors, setFormErrors] = useState({});
-
-  // Mission flow state
-  const [missionState, setMissionState] = useState('CONFIG');
-  const [genStage, setGenStage] = useState(0);
-  const [missionData, setMissionData] = useState(null);
-  const [savingState, setSavingState] = useState('');
-
-  // ─── Sync mission to Universal Context Bar ─────────────────────────
-  useEffect(() => {
-    if (missionData) {
-      setCurrentMission({
-        id: missionData.id,
-        name: missionData.name || missionData.target?.name || 'Mission',
-        status: missionData.status,
-        target: missionData.target,
-        selectedStops: missionData.selectedStops
-      });
-      if (missionData.target) {
-        setCurrentWatershed({
-          id: missionData.target.id,
-          name: missionData.target.name,
-          type: 'MISSION_TARGET'
-        });
-      }
-    }
-  }, [missionData, setCurrentMission, setCurrentWatershed]);
-
-  const [candidates, setCandidates] = useState([]);
-  const [selectedIds, setSelectedIds] = useState([]);
-  const [activeStopId, setActiveStopId] = useState(null);
-
-  const [activeTab, setActiveTab] = useState('candidate_pool');
-
-  // ─── Saved Missions ──────────────────────────────────────────────
-  const [savedMissions, setSavedMissions] = useState([]);
-  const [savedMissionsOpen, setSavedMissionsOpen] = useState(false);
-  const [loadingMissions, setLoadingMissions] = useState(false);
-  const [editingMission, setEditingMission] = useState(null);
-  const [missionFormData, setMissionFormData] = useState({});
-
-  // Load saved missions on mount
-  useEffect(() => {
-    loadSavedMissions();
-  }, []);
-
-  const loadSavedMissions = async () => {
-    setLoadingMissions(true);
-    try {
-      const missions = await listMissions();
-      setSavedMissions(missions || []);
-    } catch (err) {
-      console.error('Failed to load missions:', err);
-    } finally {
-      setLoadingMissions(false);
-    }
-  };
-
-  const handleSaveMission = async () => {
-    if (!missionData) return;
-    setSavingState('saving');
-    try {
-      const missionToSave = {
-        ...missionData,
-        status: 'DRAFT',
-        name: missionFormData.name || missionData.target?.name || 'Mission',
-        description: missionFormData.description || '',
-        priority: missionFormData.priority || 'MEDIUM',
-        selectedStops: selectedIds.map((id, idx) => {
-          const c = candidates.find(x => x.id === id);
-          return c ? { ...c, sequence: idx + 1 } : null;
-        }).filter(Boolean),
-        notes: missionFormData.notes || ''
-      };
-      
-      const saved = await createMission(missionToSave);
-      setSavingState('saved');
-      setTimeout(() => setSavingState(''), 2500);
-      await loadSavedMissions();
-    } catch (err) {
-      setSavingState('error');
-      setTimeout(() => setSavingState(''), 2500);
-      console.error('Save failed:', err);
-    }
-  };
-
-  const handleLoadMission = async (mission) => {
-    try {
-      const fullMission = await getMission(mission.id);
-      if (fullMission.stops && fullMission.stops.length > 0) {
-        // Rebuild candidates from stops
-        const stopsAsCandidates = fullMission.stops.map((s, idx) => ({
-          id: s.id,
-          title: s.title,
-          desc: s.objective,
-          coords: [s.lng, s.lat],
-          reason: s.objective,
-          priority: s.priority,
-          type: s.type,
-          objective: s.objective,
-          score: 100,
-          confidence: 0.9,
-          sequence: s.sequence
-        }));
-        setCandidates(stopsAsCandidates);
-        setSelectedIds(fullMission.stops.map(s => s.id));
-        setActiveStopId(fullMission.stops[0]?.id || null);
-      }
-      setMissionData(fullMission);
-      setMissionFormData({ name: fullMission.name, description: fullMission.description, priority: fullMission.priority, notes: fullMission.notes });
-      setMissionState('READY');
-      setActiveTab('active_plan');
-      
-      if (map.current && fullMission.map?.center) {
-        map.current.panTo({ lat: fullMission.map.center.lat, lng: fullMission.map.center.lng });
-        map.current.setZoom(12);
-      }
-    } catch (err) {
-      console.error('Failed to load mission:', err);
-      alert('Failed to load mission: ' + err.message);
-    }
-  };
-
-  const handleDeleteMission = async (missionId) => {
-    if (!window.confirm('Delete this mission?')) return;
-    try {
-      await deleteMission(missionId);
-      await loadSavedMissions();
-    } catch (err) {
-      alert('Failed to delete: ' + err.message);
-    }
-  };
-
-  // ─── Mission Form Modal ──────────────────────────────────────────
-  const [showMissionForm, setShowMissionForm] = useState(false);
-  const [missionFormMode, setMissionFormMode] = useState('create'); // 'create' | 'edit'
-
-  const MissionFormModal = () => {
-    const [formData, setFormData] = useState({
-      name: missionFormData.name || '',
-      description: missionFormData.description || '',
-      priority: missionFormData.priority || 'MEDIUM',
-      notes: missionFormData.notes || ''
-    });
-
-    const handleSubmit = async (e) => {
-      e.preventDefault();
-      setMissionFormData(formData);
-      setShowMissionForm(false);
-      await handleSaveMission();
-    };
-
-    return (
-      <div className="mission-form-overlay" onClick={() => setShowMissionForm(false)}>
-        <div className="mission-form-modal" onClick={e => e.stopPropagation()}>
-          <div className="mission-form-header">
-            <h4>{missionFormMode === 'create' ? 'SAVE MISSION AS NEW' : 'EDIT MISSION'}</h4>
-            <button className="mission-form-close" onClick={() => setShowMissionForm(false)}><X size={16} /></button>
-          </div>
-          <form onSubmit={handleSubmit} style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <div>
-              <label style={{ display: 'block', fontSize: 10, color: '#6b7280', marginBottom: 4 }}>MISSION NAME *</label>
-              <input 
-                value={formData.name} 
-                onChange={e => setFormData(prev => ({ ...prev, name: e.target.value }))} 
-                className="int-form-input" 
-                placeholder="Mission name"
-                required
-              />
-            </div>
-            <div>
-              <label style={{ display: 'block', fontSize: 10, color: '#6b7280', marginBottom: 4 }}>DESCRIPTION</label>
-              <textarea 
-                value={formData.description} 
-                onChange={e => setFormData(prev => ({ ...prev, description: e.target.value }))} 
-                className="int-form-input" 
-                rows={3}
-                placeholder="Mission description..."
-              />
-            </div>
-            <div>
-              <label style={{ display: 'block', fontSize: 10, color: '#6b7280', marginBottom: 4 }}>PRIORITY</label>
-              <select 
-                value={formData.priority} 
-                onChange={e => setFormData(prev => ({ ...prev, priority: e.target.value }))} 
-                className="int-form-input"
-              >
-                <option value="LOW">Low</option>
-                <option value="MEDIUM">Medium</option>
-                <option value="HIGH">High</option>
-                <option value="CRITICAL">Critical</option>
-              </select>
-            </div>
-            <div>
-              <label style={{ display: 'block', fontSize: 10, color: '#6b7280', marginBottom: 4 }}>NOTES</label>
-              <textarea 
-                value={formData.notes} 
-                onChange={e => setFormData(prev => ({ ...prev, notes: e.target.value }))} 
-                className="int-form-input" 
-                rows={3}
-                placeholder="Additional notes..."
-              />
-            </div>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }}>
-              <button type="button" className="int-form-btn secondary" onClick={() => setShowMissionForm(false)}>CANCEL</button>
-              <button type="submit" className="int-form-btn primary" disabled={!formData.name}>
-                {missionFormMode === 'create' ? 'SAVE MISSION' : 'UPDATE MISSION'}
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
-    );
-  };
-
-  const handleStartMission = async () => {
-    if (!missionData) return;
-    setMissionState('ACTIVE');
-    try {
-      await updateMission(missionData.id, { 
-        status: 'IN_PROGRESS', 
-        startedAt: new Date().toISOString() 
-      });
-    } catch { }
-  };
-
-  // Initialize Map
-  useEffect(() => {
-    if (!map.current && mapContainer.current) {
-      map.current = new maplibregl.Map({
-        container: mapContainer.current,
-        style: {
-          version: 8,
-          sources: {
-            satellite: {
-              type: 'raster',
-              tiles: ['https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}'],
-              tileSize: 256,
-              attribution: 'Google'
-            }
-          },
-          layers: [{ id: 'satellite-layer', type: 'raster', source: 'satellite', minzoom: 0, maxzoom: 22 }]
-        },
-        center: [86.18, 22.80],
-        zoom: 12,
-        attributionControl: false
-      });
-
-      map.current.on('load', () => {
-        map.current.addSource('route-source', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-        map.current.addLayer({
-          id: 'route-layer',
-          type: 'line',
-          source: 'route-source',
-          layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: { 'line-color': '#38bdf8', 'line-width': 3, 'line-dasharray': [2, 2] }
-        });
-      });
-    }
-  }, []);
-
-  // ─── Map markers ──────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!map.current) return;
-
-    // Clear old markers
-    Object.values(markersRef.current).forEach(m => {
-      if (m && typeof m.remove === 'function') m.remove();
-    });
-    markersRef.current = {};
-
-    candidates.forEach((c, idx) => {
-      const isSelected = selectedIds.includes(c.id);
-      const isActive = activeStopId === c.id;
-      const seqNum = selectedIds.indexOf(c.id);
-
-      const el = document.createElement('div');
-      el.style.cssText = `
-        width:${isActive ? 34 : 28}px;
-        height:${isActive ? 34 : 28}px;
-        border-radius:6px;
-        display:flex;
-        align-items:center;
-        justify-content:center;
-        font-family:monospace;
-        font-size:${isActive ? 12 : 10}px;
-        font-weight:700;
-        cursor:pointer;
-        transition:all 0.2s ease;
-        border:2px solid ${isActive ? '#fff' : isSelected ? '#10b981' : '#38bdf8'};
-        background:${isActive ? '#38bdf8' : isSelected ? '#064e3b' : 'rgba(9,15,28,0.9)'};
-        color:${isActive ? '#000' : isSelected ? '#10b981' : '#fff'};
-        box-shadow:${isActive ? '0 0 20px rgba(56,189,248,0.8)' : isSelected ? '0 0 10px rgba(16,185,129,0.4)' : '0 4px 12px rgba(0,0,0,0.6)'};
-      `;
-      el.innerText = isSelected ? String(seqNum + 1).padStart(2, '0') : String(idx + 1).padStart(2, '0');
-
-      el.addEventListener('click', (e) => {
-        e.stopPropagation();
-        setActiveStopId(c.id);
-        map.current.flyTo({ center: [c.coords[0], c.coords[1]], zoom: 15 });
-      });
-
-      const marker = new maplibregl.Marker({ element: el })
-        .setLngLat([c.coords[0], c.coords[1]])
-        .addTo(map.current);
-
-      markersRef.current[c.id] = marker;
-    });
-
-    // Origin marker
-    if (originMarkerRef.current) {
-      if (typeof originMarkerRef.current.remove === 'function') originMarkerRef.current.remove();
-      originMarkerRef.current = null;
-    }
-    if (origin && origin.lat && origin.lng) {
-      const el = document.createElement('div');
-      el.style.cssText = `
-        width:32px;height:32px;border-radius:50%;
-        background:#f59e0b;border:2px solid #fff;
-        display:flex;align-items:center;justify-content:center;
-        font-size:14px;
-        box-shadow:0 0 16px rgba(245,158,11,0.5);
-      `;
-      el.innerText = '◎';
-
-      originMarkerRef.current = new maplibregl.Marker({ element: el })
-        .setLngLat([origin.lng, origin.lat])
-        .addTo(map.current);
-    }
-  }, [candidates, selectedIds, activeStopId, origin, mapsLoaded]);
-
-  // ─── Route update ─────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!map.current || !map.current.getSource('route-source')) return;
-
-    if ((missionState === 'READY' || missionState === 'ACTIVE') && selectedIds.length > 0) {
-      let coords = [];
-      if (missionData?.map?.routeGeometry?.length > 0) {
-        coords = missionData.map.routeGeometry;
-      } else {
-        // straight-line fallback
-        if (origin) coords.push([origin.lng, origin.lat]);
-        selectedIds.forEach(id => {
-          const c = candidates.find(x => x.id === id);
-          if (c) coords.push([c.coords[0], c.coords[1]]);
-        });
-        if (origin) coords.push([origin.lng, origin.lat]);
-      }
-      map.current.getSource('route-source').setData({
-        type: 'FeatureCollection',
-        features: [{
-          type: 'Feature',
-          geometry: { type: 'LineString', coordinates: coords },
-          properties: {}
-        }]
-      });
-    } else {
-      map.current.getSource('route-source').setData({ type: 'FeatureCollection', features: [] });
-    }
-  }, [selectedIds, candidates, missionState, missionData, origin]);
-
-  // ─── Generate mission ─────────────────────────────────────────────────────
-  const handleGenerate = async () => {
-    const errs = {};
-    if (!target) errs.target = true;
-    if (!origin) errs.origin = true;
-    if (Object.keys(errs).length > 0) { setFormErrors(errs); return; }
-    setFormErrors({});
-    setMissionState('GENERATING');
-    setGenStage(0);
-
-    // Animate stages in parallel with real fetch
-    const stageTimer = (stage) => new Promise(r => setTimeout(() => { setGenStage(stage); r(); }, stage * 700));
-
-    try {
-      const [res] = await Promise.all([
-        fetch('/api/mission/generate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            targetId: target.id || target.name,
-            targetName: target.name,
-            targetLat: target.centroid?.lat ?? target.lat,
-            targetLon: target.centroid?.lng ?? target.lon,
-            origin,
-            constraints: {
-              durationMinutes: windowOpt.minutes,
-              maxStops: budget,
-              transitMode: transitOpt.value
-            }
-          })
-        }),
-        ...GEN_STAGES.map((_, i) => stageTimer(i))
-      ]);
-
-      setGenStage(GEN_STAGES.length); // all done
-      const json = await res.json();
-      if (!json.mission) throw new Error(json.error || 'No mission returned');
-
-      setMissionData(json.mission);
-
-      const mapped = json.mission.candidates.map((c, idx) => ({
-        id: c.id,
-        title: c.name,
-        desc: c.objective || c.reason,
-        coords: [parseFloat(c.lng), parseFloat(c.lat)],
-        reason: c.reason,
-        priority: c.priority >= 0.9 ? 'CRITICAL' : c.priority >= 0.7 ? 'HIGH' : c.priority >= 0.5 ? 'MED' : 'LOW',
-        gap: c.evidence,
-        score: c.score || 0,
-        confidence: c.confidence,
-        type: c.type,
-        objective: c.objective,
-      }));
-
-      setCandidates(mapped);
-      setSelectedIds(json.mission.selectedStops.map(s => s.id));
-      setActiveStopId(json.mission.selectedStops[0]?.id || null);
-      setMissionState('CANDIDATES');
-      setActiveTab('candidate_pool');
-
-      if (map.current && json.mission.map?.center) {
-        map.current.panTo({
-          lat: json.mission.map.center.lat,
-          lng: json.mission.map.center.lng
-        });
-        map.current.setZoom(12);
-      }
-    } catch (err) {
-      console.error('[Mission] generate error:', err);
-      setMissionState('CONFIG');
-      alert('Mission generation failed: ' + err.message);
-    }
-  };
-
-  // ─── Build route ───────────────────────────────────────────────────────────
-  const handleBuildRoute = () => {
-    if (selectedIds.length === 0) return;
-    setMissionState('ROUTING');
-    setTimeout(() => {
-      setMissionState('READY');
-      setActiveTab('active_plan');
-      if (map.current) {
-        const bounds = new maplibregl.LngLatBounds();
-        if (origin) bounds.extend([origin.lng, origin.lat]);
-        selectedIds.forEach(id => {
-          const c = candidates.find(x => x.id === id);
-          if (c) bounds.extend([c.coords[0], c.coords[1]]);
-        });
-        if (!bounds.isEmpty()) {
-          map.current.fitBounds(bounds, { padding: 100 });
+        const wsList = await fetchReviewWatersheds();
+        if (unmounted) return;
+        setWatersheds(wsList);
+        if (wsList.length > 0) {
+          const initialWs = wsList[0];
+          setSelectedWatershed(initialWs);
+          loadInterventionsForWs(initialWs.id);
         }
+      } catch (err) {
+        console.warn('[Review] Load watersheds error:', err);
+      } finally {
+        if (!unmounted) setLoading(false);
       }
-    }, 800);
-  };
+    }
+    loadInitial();
+    return () => { unmounted = true; };
+  }, []);
 
-  // ─── Save draft ────────────────────────────────────────────────────────────
-  const handleSave = async () => {
-    if (!missionData) return;
-    setSavingState('saving');
+  // ─── 2. Load Interventions for Watershed ───────────────────────────────────
+  const loadInterventionsForWs = useCallback(async (wsId, preferredIntId = null) => {
     try {
-      await fetch('/api/missions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...missionData, status: 'DRAFT' })
-      });
-      setSavingState('saved');
-      setTimeout(() => setSavingState(''), 2500);
-    } catch {
-      setSavingState('error');
-      setTimeout(() => setSavingState(''), 2500);
+      const items = await fetchReviewInterventions(wsId);
+      setInterventions(items);
+      if (items.length > 0) {
+        const targetId = preferredIntId || items[0].id;
+        setSelectedInterventionId(targetId);
+        loadDetail(targetId);
+      } else {
+        setSelectedInterventionId(null);
+        setInterventionDetail(null);
+      }
+    } catch (err) {
+      console.warn('[Review] Load interventions error:', err);
+    }
+  }, []);
+
+  // ─── 3. Load Intervention Detail ──────────────────────────────────────────
+  const loadDetail = useCallback(async (intId) => {
+    setLoading(true);
+    try {
+      const detail = await fetchInterventionDetail(intId);
+      setInterventionDetail(detail);
+      // Center map on intervention
+      if (mapRef.current && detail?.lat && detail?.lng) {
+        mapRef.current.flyTo({
+          center: [detail.lng, detail.lat],
+          zoom: 14.5,
+          speed: 1.2,
+          curve: 1.4
+        });
+      }
+    } catch (err) {
+      console.warn('[Review] Load detail error:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // ─── 4. Analyze Action Handler ────────────────────────────────────────────
+  const handleAnalyze = async () => {
+    if (!selectedInterventionId) return;
+    setAnalyzing(true);
+    try {
+      await loadDetail(selectedInterventionId);
+      showToast('Intervention multi-source evidence synchronized.');
+    } finally {
+      setTimeout(() => setAnalyzing(false), 500);
     }
   };
 
-  // ─── Start mission ─────────────────────────────────────────────────────────
-  const handleStart = async () => {
-    if (!missionData) return;
-    setMissionState('ACTIVE');
-    try {
-      await fetch('/api/missions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...missionData, status: 'IN_PROGRESS', startedAt: new Date().toISOString() })
-      });
-    } catch { }
-  };
-
-  // ─── Candidate toggle ──────────────────────────────────────────────────────
-  const toggleStop = (id) => {
-    setSelectedIds(prev => {
-      if (prev.includes(id)) return prev.filter(x => x !== id);
-      if (prev.length >= budget) return prev;
-      return [...prev, id];
-    });
-  };
-
-  // ─── Load history ──────────────────────────────────────────────────────────
+  // ─── 5. Map Initialization with Google Satellite Layer ─────────────────────
   useEffect(() => {
-    if (activeTab === 'history') {
-      fetch('/api/missions').then(r => r.json()).then(d => setHistory(Array.isArray(d) ? d : [])).catch(() => { });
-    }
-  }, [activeTab]);
+    if (!mapContainerRef.current) return;
+    if (mapRef.current) return;
 
-  // ─── Derived values ────────────────────────────────────────────────────────
-  const activeCandidate = candidates.find(c => c.id === activeStopId);
-  const isActiveSelected = selectedIds.includes(activeStopId);
-  const route = missionData?.route;
-  const summary = missionData?.summary;
+    const map = new maplibregl.Map({
+      container: mapContainerRef.current,
+      style: {
+        version: 8,
+        sources: {
+          satellite: {
+            type: 'raster',
+            tiles: [
+              'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}'
+            ],
+            tileSize: 256,
+            attribution: '© Google Satellite'
+          }
+        },
+        layers: [
+          {
+            id: 'satellite-layer',
+            type: 'raster',
+            source: 'satellite',
+            minzoom: 0,
+            maxzoom: 22
+          }
+        ]
+      },
+      center: [73.7351, 21.8294],
+      zoom: 13.5,
+      pitch: 25
+    });
 
-  let activeModeNum = 1;
-  if (missionState === 'GENERATING') activeModeNum = 2;
-  if (missionState === 'CANDIDATES' || missionState === 'ROUTING') activeModeNum = 3;
-  if (missionState === 'READY') activeModeNum = 4;
-  if (missionState === 'ACTIVE') activeModeNum = 5;
+    mapRef.current = map;
 
-  // ─── Render ────────────────────────────────────────────────────────────────
-  return (
-    <div className="mission-container">
-      <AppNavigation />
-      <div className="mission-content">
-        <div ref={mapContainer} className="mission-map-container" />
+    // Resize observer to ensure full container width and height
+    const ro = new ResizeObserver(() => {
+      map.resize();
+    });
+    ro.observe(mapContainerRef.current);
 
-        {missionState === 'GENERATING' && <GeneratingOverlay stage={genStage} />}
+    map.on('load', () => {
+      map.resize();
 
-        <div className="mission-ui-layer">
-          {/* ── Top Panel ────────────────────────────────────── */}
-          <div className="mission-top-section">
-            <div className="mission-header-row">
-              <div className="mh-left">
-                <div className="mh-brand">DHARAWATCH / FIELD / MISSION INTELLIGENCE</div>
-                <div className="mh-title">
-                  FIELD / MISSION INTELLIGENCE
-                  <span className="mh-status-badge">
-                    <span className="mh-status-dot" />
-                    ORBITAL GAP ANALYSIS SYNCED
-                  </span>
-                </div>
-              </div>
-              <div className="mh-right">
-                <div>CONSTELLATION: <span>SENTINEL-2 / SPOT-7</span></div>
-                <div className="mh-operator">
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ color: '#fff', fontWeight: 600 }}>CDR. A. VANCE</div>
-                    <div>GEOINT SPEC // T1</div>
-                  </div>
-                  <Crosshair size={18} color="#9ca3af" />
-                </div>
-              </div>
-            </div>
+      // Add Watershed Boundary GeoJSON
+      map.addSource('ws-boundary', {
+        type: 'geojson',
+        data: {
+          type: 'Feature',
+          properties: { name: 'Kevadiya Catchment' },
+          geometry: {
+            type: 'Polygon',
+            coordinates: [[
+              [73.40, 21.60], [73.95, 21.62], [74.00, 22.05],
+              [73.65, 22.10], [73.35, 21.85], [73.40, 21.60]
+            ]]
+          }
+        }
+      });
 
-            <div className="mission-hero-row">
-              <div className="mission-hero">
-                <h1>PLAN THE NEXT FIELD MISSION.</h1>
-                <p>Turn satellite change, evidence gaps and spatial context into a focused, highly optimized field ground-truth plan.</p>
-              </div>
-              <div className="mission-mode-stepper">
-                <div>
-                  <div style={{ fontFamily: 'monospace', fontSize: 9, color: '#9ca3af', marginBottom: 6 }}>ACTIVE MODE</div>
-                  <div className="mode-steps">
-                    {['TARGET', 'ANALYZE', 'PLAN', 'REVIEW', 'EXECUTE'].map((label, idx) => {
-                      const step = idx + 1;
-                      const active = step === activeModeNum;
-                      const completed = step < activeModeNum;
-                      return (
-                        <div key={step} className={`mode-step${completed ? ' completed' : ''}${active ? ' active' : ''}`}>
-                          <div className="ms-num">0{step}</div>
-                          <div className="ms-dot" />
-                          <div className="ms-label">{label}</div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-                <button className="capture-btn" onClick={() => navigate('/field')}>
-                  <Camera size={14} /> CAPTURE<br />EVIDENCE
-                </button>
-              </div>
-            </div>
+      map.addLayer({
+        id: 'ws-boundary-line',
+        type: 'line',
+        source: 'ws-boundary',
+        paint: {
+          'line-color': '#38bdf8',
+          'line-width': 2,
+          'line-dasharray': [4, 2],
+          'line-opacity': 0.8
+        }
+      });
 
-            {/* ── Config strip ── */}
-            <div className="mission-config-strip">
-              <WatershedSelector value={target} onChange={(t) => { setTarget(t); setMissionData(null); if (missionState !== 'CONFIG') setMissionState('CONFIG'); }} />
-              <OriginSelector value={origin} onChange={(o) => { setOrigin(o); setMissionData(null); if (missionState !== 'CONFIG') setMissionState('CONFIG'); }} />
-
-              <SimpleSelector
-                label="FIELD WINDOW" icon={Clock}
-                value={windowOpt.minutes} display={windowOpt.label}
-                options={WINDOW_OPTIONS.map(o => ({ ...o, value: o.minutes }))}
-                onChange={(o) => { setWindowOpt(o); if (missionState !== 'CONFIG') setMissionState('CONFIG'); }}
-              />
-              <SimpleSelector
-                label="BUDGET STOPS" icon={MapPin}
-                value={budget} display={`${budget} STOPS`}
-                options={STOP_OPTIONS.map(n => ({ label: `${n} STOP${n > 1 ? 'S' : ''}`, value: n }))}
-                onChange={(o) => { setBudget(o.value); if (missionState !== 'CONFIG') setMissionState('CONFIG'); }}
-              />
-              <SimpleSelector
-                label="TRANSIT TYPE" icon={Car}
-                value={transitOpt.value} display={transitOpt.label}
-                options={TRANSIT_OPTIONS}
-                onChange={(o) => { setTransitOpt(o); if (missionState !== 'CONFIG') setMissionState('CONFIG'); }}
-              />
-
-              {(missionState === 'CONFIG' || missionState === 'CANDIDATES' || missionState === 'ROUTING' || missionState === 'READY') && (
-                <button className="gen-mission-btn" onClick={handleGenerate} disabled={missionState === 'GENERATING'}>
-                  {missionState === 'CONFIG' ? (<>GENERATE MISSION <ArrowRight size={14} /></>) : (<>REPLAN MISSION <ArrowRight size={14} /></>)}
-                </button>
-              )}
-              {missionState === 'ACTIVE' && (
-                <div style={{ marginLeft: 'auto', background: 'rgba(16,185,129,0.1)', border: '1px solid #10b981', borderRadius: 6, padding: '8px 16px', fontFamily: 'monospace', fontSize: 11, color: '#10b981', display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981', animation: 'pulse 1s infinite' }} /> MISSION IN PROGRESS
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* ── Map controls ── */}
-          <div className="map-controls">
-            <button onClick={() => { if (map.current) map.current.setZoom(map.current.getZoom() + 1); }}><ZoomIn size={16} /></button>
-            <button onClick={() => { if (map.current) map.current.setZoom(map.current.getZoom() - 1); }}><ZoomOut size={16} /></button>
-            <button onClick={() => {
-              if (missionData?.map?.center && map.current) {
-                map.current.panTo({ lat: missionData.map.center.lat, lng: missionData.map.center.lng });
-                map.current.setZoom(12);
+      // Add Drainage Network
+      map.addSource('drainage-source', {
+        type: 'geojson',
+        data: {
+          type: 'FeatureCollection',
+          features: [
+            {
+              type: 'Feature',
+              properties: { streamOrder: 3, name: 'Karjan River Tributary' },
+              geometry: {
+                type: 'LineString',
+                coordinates: [
+                  [73.68, 21.78], [73.71, 21.81], [73.735, 21.829],
+                  [73.75, 21.845], [73.78, 21.87]
+                ]
               }
-            }}><Maximize size={16} /></button>
+            },
+            {
+              type: 'Feature',
+              properties: { streamOrder: 2, name: 'Valley Drainage Stream' },
+              geometry: {
+                type: 'LineString',
+                coordinates: [
+                  [73.71, 21.845], [73.725, 21.835], [73.735, 21.829]
+                ]
+              }
+            }
+          ]
+        }
+      });
+
+      map.addLayer({
+        id: 'drainage-layer',
+        type: 'line',
+        source: 'drainage-source',
+        layout: { 'line-join': 'round', 'line-cap': 'round', visibility: 'visible' },
+        paint: {
+          'line-color': '#06b6d4',
+          'line-width': 3,
+          'line-opacity': 0.9
+        }
+      });
+    });
+
+    return () => {
+      ro.disconnect();
+      map.remove();
+      mapRef.current = null;
+    };
+  }, []);
+
+  // ─── 6. Update Map Markers & Layers ────────────────────────────────────────
+  useEffect(() => {
+    if (!mapRef.current) return;
+
+    // Clear existing markers
+    markersRef.current.forEach(m => m.remove());
+    markersRef.current = [];
+
+    // 1. Plot Interventions
+    if (layers.interventions && interventions.length > 0) {
+      interventions.forEach(item => {
+        const isSelected = item.id === selectedInterventionId;
+        const statusBadge = getStatusBadge(item.evidenceStatus);
+
+        const el = document.createElement('div');
+        el.className = `ier-map-marker ${isSelected ? 'ier-marker-selected' : ''}`;
+        el.style.backgroundColor = statusBadge.color;
+
+        el.innerHTML = `
+          <div class="ier-marker-inner">
+            ${isSelected ? '★' : '•'}
+          </div>
+          ${isSelected ? `<div class="ier-marker-label">${item.name}</div>` : ''}
+        `;
+
+        el.addEventListener('click', () => {
+          setSelectedInterventionId(item.id);
+          loadDetail(item.id);
+        });
+
+        const marker = new maplibregl.Marker({ element: el })
+          .setLngLat([item.lng, item.lat])
+          .addTo(mapRef.current);
+
+        markersRef.current.push(marker);
+      });
+    }
+
+    // 2. Plot Field Photos for the selected intervention
+    if (layers.fieldPhotos && interventionDetail?.fieldPhotos?.length > 0) {
+      interventionDetail.fieldPhotos.forEach(photo => {
+        const el = document.createElement('div');
+        el.className = 'ier-photo-marker';
+        el.innerHTML = `
+          <div class="ier-photo-marker-pin">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+          </div>
+        `;
+
+        el.addEventListener('click', () => {
+          setSelectedPhotoModal(photo);
+        });
+
+        const marker = new maplibregl.Marker({ element: el })
+          .setLngLat([photo.lng, photo.lat])
+          .addTo(mapRef.current);
+
+        markersRef.current.push(marker);
+      });
+    }
+
+    // 3. Update layer visibility
+    if (mapRef.current.isStyleLoaded()) {
+      if (mapRef.current.getLayer('drainage-layer')) {
+        mapRef.current.setLayoutProperty(
+          'drainage-layer',
+          'visibility',
+          layers.drainage ? 'visible' : 'none'
+        );
+      }
+    }
+  }, [interventions, selectedInterventionId, interventionDetail, layers, loadDetail]);
+
+  // ─── 7. Toggle Review / Watchlist Status ────────────────────────────────────
+  const handleToggleReview = async () => {
+    if (!interventionDetail) return;
+    const nextStatus = !interventionDetail.isReviewed;
+    try {
+      const res = await toggleReviewStatus({
+        interventionId: interventionDetail.id,
+        isReviewed: nextStatus
+      });
+      setInterventionDetail(prev => ({
+        ...prev,
+        isReviewed: res.isReviewed,
+        reviewStatus: res.isReviewed ? 'REVIEWED' : 'PENDING_REVIEW'
+      }));
+      setInterventions(prev => prev.map(item =>
+        item.id === interventionDetail.id ? { ...item, isReviewed: res.isReviewed } : item
+      ));
+      showToast(res.message || (nextStatus ? 'Intervention marked as Reviewed.' : 'Intervention marked for Review.'));
+    } catch (err) {
+      showToast('Failed to update review status.');
+    }
+  };
+
+  // ─── 8. Add Field Evidence Submission ──────────────────────────────────────
+  const handleAddPhotoSubmit = async (e) => {
+    e.preventDefault();
+    if (!interventionDetail) return;
+
+    try {
+      const res = await addFieldPhoto({
+        interventionId: interventionDetail.id,
+        title: newPhotoForm.title || 'Field Ground Inspection',
+        type: newPhotoForm.type,
+        photographer: newPhotoForm.photographer,
+        notes: newPhotoForm.notes,
+        url: newPhotoForm.url,
+        lat: newPhotoForm.lat || interventionDetail.lat,
+        lng: newPhotoForm.lng || interventionDetail.lng
+      });
+
+      if (res.intervention) {
+        setInterventionDetail(res.intervention);
+      }
+
+      setAddEvidenceModalOpen(false);
+      setNewPhotoForm({
+        title: '',
+        type: 'Verification Audit',
+        photographer: 'Field Officer',
+        notes: '',
+        url: 'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1200&q=80',
+        lat: '',
+        lng: ''
+      });
+      showToast('Geo-tagged field evidence recorded successfully.');
+    } catch (err) {
+      showToast('Failed to save field evidence.');
+    }
+  };
+
+  // ─── 9. Dragging Handler for Before/After Slider ───────────────────────────
+  const handleSliderMouseDown = () => setIsDraggingSlider(true);
+  const handleSliderMouseMove = (e) => {
+    if (!isDraggingSlider) return;
+    const container = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - container.left;
+    const pct = Math.max(0, Math.min(100, (x / container.width) * 100));
+    setSliderPos(pct);
+  };
+  const handleSliderMouseUp = () => setIsDraggingSlider(false);
+
+  const statusBadge = interventionDetail?.evidenceStatusInfo
+    ? getStatusBadge(interventionDetail.evidenceStatusInfo.status)
+    : getStatusBadge('NO DATA');
+
+  return (
+    <div className="ier-layout">
+      {/* Side Navigation Rail */}
+      <AppNavigation />
+
+      <main className="ier-main">
+        {/* ─── Top Page Header ────────────────────────────────────────── */}
+        <header className="ier-header">
+          <div className="ier-header-left">
+            <div className="ier-badge-row">
+              <span className="ier-status-pill">
+                <span className="ier-status-dot" />
+                EVIDENCE MONITORING
+              </span>
+              <span className="ier-sub-badge">SIH26015 WATERSHED VERIFICATION</span>
+            </div>
+            <h1 className="ier-title">INTERVENTION EVIDENCE REVIEW</h1>
+            <p className="ier-subtitle">
+              Review field evidence, satellite change and terrain context for watershed interventions.
+            </p>
           </div>
 
-          {/* ── Middle floating panels ── */}
-          <div className="mission-middle-section">
-
-            {/* Synthesis panel */}
-            {(missionState === 'READY' || missionState === 'ACTIVE') && missionData && (
-              <div className="synthesis-panel">
-                <div className="syn-header">
-                  <div><Layers size={11} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} /> MISSION SYNTHESIS</div>
-                  <div className="syn-badge">AI OPTIMIZED</div>
-                </div>
-
-                <div style={{ fontFamily: 'Inter', fontSize: 17, fontWeight: 700, color: '#fff', lineHeight: 1.2 }}>
-                  {selectedIds.length} HIGH-VALUE STOP{selectedIds.length !== 1 ? 'S' : ''} SELECTED
-                </div>
-                {budget > selectedIds.length && (
-                  <div style={{ fontFamily: 'monospace', fontSize: 9, color: '#6b7280', marginTop: -4 }}>
-                    {budget} STOP MAX · {selectedIds.length} SELECTED · {budget - selectedIds.length} SLOTS UNUSED
-                  </div>
-                )}
-
-                <div style={{ fontFamily: 'Inter', fontSize: 12, color: '#d1d5db', lineHeight: 1.5, background: 'rgba(0,0,0,0.3)', borderRadius: 6, padding: 12 }}>
-                  Prioritizes the highest-value unverified changes while keeping the mission inside the {windowOpt.label.toLowerCase()} field window.
-                  {summary?.isFeasible === false && (
-                    <span style={{ color: '#f59e0b', display: 'block', marginTop: 4 }}> ⚠ Mission exceeds time budget — consider reducing stops.</span>
-                  )}
-                </div>
-
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                  <div style={{ background: 'rgba(0,0,0,0.25)', borderRadius: 6, padding: '8px 12px' }}>
-                    <div style={{ fontFamily: 'monospace', fontSize: 8, color: '#6b7280', marginBottom: 4 }}>DRIVE DISTANCE</div>
-                    <div style={{ fontFamily: 'monospace', fontSize: 15, color: '#38bdf8', fontWeight: 700 }}>
-                      <Route size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} />{route?.driveDistance || '—'}
-                    </div>
-                  </div>
-                  <div style={{ background: 'rgba(0,0,0,0.25)', borderRadius: 6, padding: '8px 12px' }}>
-                    <div style={{ fontFamily: 'monospace', fontSize: 8, color: '#6b7280', marginBottom: 4 }}>DRIVE TIME</div>
-                    <div style={{ fontFamily: 'monospace', fontSize: 15, color: '#38bdf8', fontWeight: 700 }}>
-                      <Timer size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} />{fmtMin(route?.driveDurationMinutes)}
-                    </div>
-                  </div>
-                  <div style={{ background: 'rgba(0,0,0,0.25)', borderRadius: 6, padding: '8px 12px' }}>
-                    <div style={{ fontFamily: 'monospace', fontSize: 8, color: '#6b7280', marginBottom: 4 }}>FIELD TIME</div>
-                    <div style={{ fontFamily: 'monospace', fontSize: 15, color: '#10b981', fontWeight: 700 }}>
-                      <Footprints size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} />{fmtMin(route?.fieldDurationMinutes)}
-                    </div>
-                  </div>
-                  <div style={{ background: 'rgba(0,0,0,0.25)', borderRadius: 6, padding: '8px 12px' }}>
-                    <div style={{ fontFamily: 'monospace', fontSize: 8, color: '#6b7280', marginBottom: 4 }}>TIME BUFFER</div>
-                    <div style={{ fontFamily: 'monospace', fontSize: 15, color: route?.bufferMinutes >= 0 ? '#f59e0b' : '#ef4444', fontWeight: 700 }}>
-                      <Shield size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} />{fmtMin(Math.max(0, route?.bufferMinutes))}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="syn-footer">
-                  <CheckCircle2 size={12} /> Confidence: {summary?.confidence ?? '—'}%
-                </div>
-              </div>
+          <div className="ier-header-right">
+            {interventionDetail && (
+              <button
+                className={`ier-review-btn ${interventionDetail.isReviewed ? 'ier-btn-reviewed' : ''}`}
+                onClick={handleToggleReview}
+                title="Mark this intervention for follow-up or mark as reviewed"
+              >
+                <Bookmark size={15} />
+                {interventionDetail.isReviewed ? 'REVIEWED ✓' : 'MARK FOR REVIEW'}
+              </button>
             )}
+          </div>
+        </header>
 
-            {/* Inspector panel */}
-            {activeCandidate && (
-              <div className="inspector-panel">
-                <div className="insp-header">STOP INSPECTOR</div>
-                <div className="insp-title-row">
-                  <div className="insp-title" style={{ fontSize: 16 }}>
-                    {activeCandidate.title}
-                  </div>
-                  <PriBadge p={activeCandidate.priority} />
-                </div>
+        {/* ─── Top Control Bar ────────────────────────────────────────── */}
+        <section className="ier-control-bar">
+          {/* Watershed Selector */}
+          <div className="ier-control-group">
+            <label className="ier-control-label">WATERSHED</label>
+            <div
+              ref={wsAnchorRef}
+              className="ier-select-trigger"
+              onClick={() => setWsDropdownOpen(!wsDropdownOpen)}
+            >
+              <div className="ier-select-value">
+                <span className="ier-select-main">{selectedWatershed?.name || 'Select Watershed'}</span>
+                <span className="ier-select-sub">{selectedWatershed?.state || 'India'} · {selectedWatershed?.areaKm2 || 0} km²</span>
+              </div>
+              <ChevronDown size={15} className="ier-chevron" />
+            </div>
 
-                <div className="insp-why">
-                  <div className="iw-title">WHY VISIT? <ShieldCheck size={12} /></div>
-                  <div className="iw-desc">{activeCandidate.reason}</div>
-                  {activeCandidate.gap && <div className="iw-sub" style={{ marginTop: 4 }}>Evidence: {activeCandidate.gap}</div>}
-                </div>
-
-                <div className="insp-context">
-                  <div className="ic-row">
-                    <div className="ic-label">TYPE:</div>
-                    <div className="ic-val">{activeCandidate.type?.replace('_', ' ')}</div>
-                  </div>
-                  <div className="ic-row">
-                    <div className="ic-label">CONFIDENCE:</div>
-                    <div className="ic-val">{activeCandidate.confidence != null ? `${Math.round(activeCandidate.confidence * 100)}%` : '—'}</div>
-                  </div>
-                  <div className="ic-row">
-                    <div className="ic-label">COORDINATES:</div>
-                    <div className="ic-val" style={{ fontSize: 9, color: '#6b7280' }}>
-                      {activeCandidate.coords[1].toFixed(4)}, {activeCandidate.coords[0].toFixed(4)}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="insp-value-decomp">
-                  <div className="ivd-title">EVIDENCE SCORE</div>
-                  <div className="ivd-row">
-                    <div className="ivd-label">RAW SCORE</div>
-                    <ScoreBars score={activeCandidate.score} />
-                    <div className="ivd-val">{Math.round(activeCandidate.score)}</div>
-                  </div>
-                  <div className="ivd-row">
-                    <div className="ivd-label">CONFIDENCE</div>
-                    <ScoreBars score={(activeCandidate.confidence || 0) * 100} />
-                    <div className="ivd-val">{Math.round((activeCandidate.confidence || 0) * 100)}%</div>
-                  </div>
-                </div>
-
-                <div className="insp-actions">
-                  <button
-                    className={`insp-btn${isActiveSelected ? ' remove' : ''}`}
-                    onClick={() => toggleStop(activeCandidate.id)}
+            <Dropdown
+              anchorRef={wsAnchorRef}
+              open={wsDropdownOpen}
+              onClose={() => setWsDropdownOpen(false)}
+            >
+              <div className="ier-dropdown-header">AVAILABLE WATERSHEDS</div>
+              <div className="ier-dropdown-list">
+                {watersheds.map(ws => (
+                  <div
+                    key={ws.id}
+                    className={`ier-dropdown-item ${selectedWatershed?.id === ws.id ? 'ier-item-active' : ''}`}
+                    onClick={() => {
+                      setSelectedWatershed(ws);
+                      setWsDropdownOpen(false);
+                      loadInterventionsForWs(ws.id);
+                    }}
                   >
-                    {isActiveSelected ? 'REMOVE FROM PLAN' : 'ADD TO PLAN'}
-                  </button>
-                  <button className="insp-btn secondary" onClick={() => navigate('/compare')}>
-                    <Layers size={13} /> VIEW SATELLITE CONTEXT
-                  </button>
-                </div>
+                    <div className="ier-item-title">{ws.name}</div>
+                    <div className="ier-item-sub">{ws.district}, {ws.state} · {ws.interventionsCount} interventions</div>
+                  </div>
+                ))}
               </div>
-            )}
+            </Dropdown>
           </div>
 
-          {/* ── Bottom dock ── */}
-          {missionState !== 'CONFIG' && missionState !== 'GENERATING' && (
-            <div className="mission-bottom-strip">
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <div className="mb-tabs">
-                  <div className={`mb-tab${activeTab === 'active_plan' ? ' active' : ''}`} onClick={() => setActiveTab('active_plan')}>
-                    <span style={{ color: '#38bdf8' }}>●</span> Active Plan ({selectedIds.length}/{budget} Stops)
+          {/* Intervention Selector */}
+          <div className="ier-control-group">
+            <label className="ier-control-label">INTERVENTION</label>
+            <div
+              ref={intAnchorRef}
+              className="ier-select-trigger"
+              onClick={() => setIntDropdownOpen(!intDropdownOpen)}
+            >
+              <div className="ier-select-value">
+                <span className="ier-select-main">{interventionDetail?.name || 'Select Intervention'}</span>
+                <span className="ier-select-sub">{interventionDetail?.type || 'Intervention'} · {interventionDetail?.status || ''}</span>
+              </div>
+              <ChevronDown size={15} className="ier-chevron" />
+            </div>
+
+            <Dropdown
+              anchorRef={intAnchorRef}
+              open={intDropdownOpen}
+              onClose={() => setIntDropdownOpen(false)}
+            >
+              <div className="ier-dropdown-header">WATERSHED INTERVENTIONS ({interventions.length})</div>
+              <div className="ier-dropdown-list">
+                {interventions.map(item => {
+                  const badge = getStatusBadge(item.evidenceStatus);
+                  return (
+                    <div
+                      key={item.id}
+                      className={`ier-dropdown-item ${selectedInterventionId === item.id ? 'ier-item-active' : ''}`}
+                      onClick={() => {
+                        setSelectedInterventionId(item.id);
+                        setIntDropdownOpen(false);
+                        loadDetail(item.id);
+                      }}
+                    >
+                      <div className="ier-item-row">
+                        <span className="ier-item-title">{item.name}</span>
+                        <span className="ier-item-status-pill" style={{ color: badge.color, backgroundColor: badge.bg }}>
+                          {item.evidenceStatus}
+                        </span>
+                      </div>
+                      <div className="ier-item-sub">{item.type} · {item.village}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Dropdown>
+          </div>
+
+          {/* Time Period: Before */}
+          <div className="ier-control-group">
+            <label className="ier-control-label">BEFORE (BASELINE)</label>
+            <div
+              ref={beforeAnchorRef}
+              className="ier-select-trigger ier-select-sm"
+              onClick={() => setBeforeDropdownOpen(!beforeDropdownOpen)}
+            >
+              <span className="ier-select-main">{beforePeriod}</span>
+              <ChevronDown size={14} className="ier-chevron" />
+            </div>
+            <Dropdown
+              anchorRef={beforeAnchorRef}
+              open={beforeDropdownOpen}
+              onClose={() => setBeforeDropdownOpen(false)}
+              width={220}
+            >
+              <div className="ier-dropdown-list">
+                {['2021-06 (Pre-Monsoon)', '2022-05 (Baseline)', '2022-10 (Post-Monsoon)', '2023-05 (Dry Season)'].map(p => (
+                  <div
+                    key={p}
+                    className={`ier-dropdown-item ${beforePeriod === p ? 'ier-item-active' : ''}`}
+                    onClick={() => { setBeforePeriod(p); setBeforeDropdownOpen(false); }}
+                  >
+                    {p}
                   </div>
-                  <div className={`mb-tab${activeTab === 'candidate_pool' ? ' active' : ''}`} onClick={() => setActiveTab('candidate_pool')}>
-                    Candidate Pool ({candidates.length} Sites)
+                ))}
+              </div>
+            </Dropdown>
+          </div>
+
+          {/* Time Period: After */}
+          <div className="ier-control-group">
+            <label className="ier-control-label">AFTER (CURRENT)</label>
+            <div
+              ref={afterAnchorRef}
+              className="ier-select-trigger ier-select-sm"
+              onClick={() => setAfterDropdownOpen(!afterDropdownOpen)}
+            >
+              <span className="ier-select-main">{afterPeriod}</span>
+              <ChevronDown size={14} className="ier-chevron" />
+            </div>
+            <Dropdown
+              anchorRef={afterAnchorRef}
+              open={afterDropdownOpen}
+              onClose={() => setAfterDropdownOpen(false)}
+              width={220}
+            >
+              <div className="ier-dropdown-list">
+                {['2023-10 (Post-Monsoon)', '2024-05 (Pre-Monsoon)', '2024-09 (Current)', '2024-10 (Latest S2)'].map(p => (
+                  <div
+                    key={p}
+                    className={`ier-dropdown-item ${afterPeriod === p ? 'ier-item-active' : ''}`}
+                    onClick={() => { setAfterPeriod(p); setAfterDropdownOpen(false); }}
+                  >
+                    {p}
                   </div>
-                  <div className={`mb-tab${activeTab === 'history' ? ' active' : ''}`} onClick={() => setActiveTab('history')}>
-                    <Clock size={11} /> Mission History
-                    {history.length > 0 && <span style={{ marginLeft: 4, background: 'rgba(56,189,248,0.2)', borderRadius: 8, padding: '1px 5px', fontSize: 9 }}>{history.length}</span>}
+                ))}
+              </div>
+            </Dropdown>
+          </div>
+
+          {/* Analyze Button */}
+          <button
+            className={`ier-analyze-btn ${analyzing ? 'ier-btn-analyzing' : ''}`}
+            onClick={handleAnalyze}
+            disabled={analyzing || !selectedInterventionId}
+          >
+            {analyzing ? (
+              <>
+                <RefreshCw size={15} className="ier-spinner" />
+                ANALYZING...
+              </>
+            ) : (
+              <>
+                <Eye size={15} />
+                ANALYZE INTERVENTION
+              </>
+            )}
+          </button>
+        </section>
+
+        {/* ─── Main 2-Column Layout ──────────────────────────────────── */}
+        <div className="ier-body">
+          {/* ─── LEFT: Interactive Satellite Map ────────────────────── */}
+          <section className="ier-map-col">
+            <div className="ier-map-wrapper">
+              <div ref={mapContainerRef} className="ier-map-container" />
+
+              {/* Map Floating Controls */}
+              <div className="ier-map-controls">
+                <button
+                  className="ier-map-btn"
+                  title="Zoom In"
+                  onClick={() => mapRef.current?.zoomIn()}
+                >
+                  <ZoomIn size={16} />
+                </button>
+                <button
+                  className="ier-map-btn"
+                  title="Zoom Out"
+                  onClick={() => mapRef.current?.zoomOut()}
+                >
+                  <ZoomOut size={16} />
+                </button>
+                <button
+                  className="ier-map-btn"
+                  title="Center on Intervention"
+                  onClick={() => {
+                    if (mapRef.current && interventionDetail) {
+                      mapRef.current.flyTo({
+                        center: [interventionDetail.lng, interventionDetail.lat],
+                        zoom: 14.5
+                      });
+                    }
+                  }}
+                >
+                  <Maximize size={16} />
+                </button>
+
+                {/* Layer Control Trigger */}
+                <div style={{ position: 'relative' }}>
+                  <button
+                    ref={layerAnchorRef}
+                    className={`ier-map-btn ${layerMenuOpen ? 'ier-map-btn-active' : ''}`}
+                    title="Toggle Map Layers"
+                    onClick={() => setLayerMenuOpen(!layerMenuOpen)}
+                  >
+                    <Layers size={16} />
+                  </button>
+
+                  <Dropdown
+                    anchorRef={layerAnchorRef}
+                    open={layerMenuOpen}
+                    onClose={() => setLayerMenuOpen(false)}
+                    width={240}
+                  >
+                    <div className="ier-dropdown-header">MAP LAYERS</div>
+                    <div className="ier-layer-list">
+                      <label className="ier-layer-item">
+                        <input
+                          type="checkbox"
+                          checked={layers.interventions}
+                          onChange={(e) => setLayers(prev => ({ ...prev, interventions: e.target.checked }))}
+                        />
+                        <span>Watershed Interventions</span>
+                      </label>
+                      <label className="ier-layer-item">
+                        <input
+                          type="checkbox"
+                          checked={layers.fieldPhotos}
+                          onChange={(e) => setLayers(prev => ({ ...prev, fieldPhotos: e.target.checked }))}
+                        />
+                        <span>Field Evidence Photos</span>
+                      </label>
+                      <label className="ier-layer-item">
+                        <input
+                          type="checkbox"
+                          checked={layers.drainage}
+                          onChange={(e) => setLayers(prev => ({ ...prev, drainage: e.target.checked }))}
+                        />
+                        <span>Drainage Network</span>
+                      </label>
+                    </div>
+                  </Dropdown>
+                </div>
+              </div>
+
+              {/* Map Footer Bar / Coordinate Overlay */}
+              {interventionDetail && (
+                <div className="ier-map-overlay-footer">
+                  <div className="ier-coord-chip">
+                    <MapPin size={12} className="text-cyan-400" />
+                    <span>{interventionDetail.lat.toFixed(4)}°N, {interventionDetail.lng.toFixed(4)}°E</span>
+                  </div>
+                  <div className="ier-coord-chip">
+                    <Mountain size={12} className="text-emerald-400" />
+                    <span>Elev: {interventionDetail.terrain?.elevationM || 412}m</span>
+                  </div>
+                  <div className="ier-coord-chip">
+                    <Droplets size={12} className="text-blue-400" />
+                    <span>Drainage: {interventionDetail.terrain?.drainageDistanceM || 38}m</span>
                   </div>
                 </div>
-                {/* Actions */}
-                {(missionState === 'READY' || missionState === 'ACTIVE' || missionState === 'CANDIDATES') && (
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <button
-                      className="mbs-btn"
-                      onClick={() => exportGPX(missionData, candidates, selectedIds)}
-                      disabled={selectedIds.length === 0}
-                    >
-                      <Download size={13} /> Export GPX
-                    </button>
-                    
-                    {/* Saved Missions Dropdown */}
-                    <div style={{ position: 'relative' }}>
-                      <button className="mbs-btn" onClick={() => setSavedMissionsOpen(!savedMissionsOpen)}>
-                        <Save size={13} /> MISSIONS ({savedMissions.length})
-                      </button>
-                      {savedMissionsOpen && (
-                        <div className="mbs-dropdown" style={{ 
-                          position: 'absolute', bottom: '100%', right: 0, marginBottom: 8,
-                          minWidth: 320, maxHeight: 300, overflowY: 'auto',
-                          background: 'rgba(9,11,15,0.97)', backdropFilter: 'blur(20px)',
-                          border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8,
-                          boxShadow: '0 8px 32px rgba(0,0,0,0.6)', zIndex: 1000
-                        }}>
-                          {loadingMissions && <div style={{ padding: 12, textAlign: 'center', color: '#6b7280', fontFamily: 'monospace', fontSize: 11 }}>Loading…</div>}
-                          {!loadingMissions && savedMissions.length === 0 && <div style={{ padding: 12, color: '#6b7280', fontFamily: 'monospace', fontSize: 11 }}>No saved missions</div>}
-                          {!loadingMissions && savedMissions.map(m => (
-                            <div key={m.id} style={{ padding: '10px 12px', borderBottom: '1px solid rgba(255,255,255,0.05)', cursor: 'pointer' }}
-                              onClick={() => { handleLoadMission(m); setSavedMissionsOpen(false); }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ fontWeight: 600, fontSize: 12, color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                  {m.name || m.target?.name || 'Unnamed Mission'}
-                                </div>
-                                <div style={{ fontSize: 10, color: '#6b7280', marginTop: 2 }}>
-                                  {m.target?.name} · {m.selectedStops?.length || 0} stops · {m.route?.driveDistance || '—'}
-                                </div>
-                                <div style={{ fontSize: 9, color: '#4b5563', marginTop: 2, fontFamily: 'monospace' }}>
-                                  {m.timestamps?.generatedAt ? new Date(m.timestamps.generatedAt).toLocaleDateString() : ''} · {m.status}
-                                </div>
-                              </div>
-                              <button 
-                                onClick={(e) => { e.stopPropagation(); handleDeleteMission(m.id); }} 
-                                style={{ color: '#6b7280', marginLeft: 8 }}
-                              >
-                                <Trash2 size={10} />
-                              </button>
-                            </div>
-                          </div>
-                          ))}
-                          <div style={{ padding: '8px 12px', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
-                            <button 
-                              className="mbs-btn" 
-                              style={{ width: '100%', justifyContent: 'center' }}
-                              onClick={() => { setMissionFormData({ name: '', description: '', priority: 'MEDIUM', notes: '' }); setMissionFormMode('create'); setShowMissionForm(true); setSavedMissionsOpen(false); }}
-                            >
-                              <Plus size={12} /> SAVE CURRENT AS NEW
-                            </button>
-                          </div>
-                        </div>
+              )}
+            </div>
+          </section>
+
+          {/* ─── RIGHT: Summary & Multi-Source Evidence Panel ─────────── */}
+          <section className="ier-detail-col">
+            {loading && !interventionDetail ? (
+              <div className="ier-loading-box">
+                <RefreshCw size={24} className="ier-spinner text-cyan-400" />
+                <p>Analyzing intervention evidence...</p>
+              </div>
+            ) : !interventionDetail ? (
+              <div className="ier-empty-box">
+                <Info size={32} className="text-gray-500" />
+                <p>Select an intervention from the top control bar to begin analysis.</p>
+              </div>
+            ) : (
+              <div className="ier-detail-scroll">
+                {/* 1. Header Card */}
+                <div className="ier-card ier-card-header">
+                  <div className="ier-header-meta">
+                    <div className="ier-header-top">
+                      <span className="ier-type-tag">{interventionDetail.type}</span>
+                      <span className="ier-status-tag">{interventionDetail.status}</span>
+                      {interventionDetail.scheme && (
+                        <span className="ier-scheme-tag">{interventionDetail.scheme}</span>
                       )}
                     </div>
-                    
-                    {missionState === 'CANDIDATES' && (
-                      <button className="mbs-btn primary" onClick={handleBuildRoute} disabled={selectedIds.length === 0}>
-                        <Route size={13} /> BUILD ROUTE
+                    <h2 className="ier-int-name">{interventionDetail.name}</h2>
+                    <div className="ier-location-line">
+                      <MapPin size={13} className="text-cyan-400" />
+                      <span>{interventionDetail.village}, {interventionDetail.district}</span>
+                      <span className="ier-dot-sep">•</span>
+                      <span>Constructed: {interventionDetail.constructionDate}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2. Evidence Status Banner */}
+                <div
+                  className="ier-status-banner"
+                  style={{
+                    backgroundColor: statusBadge.bg,
+                    borderColor: statusBadge.border
+                  }}
+                >
+                  <div className="ier-status-banner-header">
+                    <span className="ier-status-banner-title">EVIDENCE STATUS</span>
+                    <span
+                      className="ier-status-badge-pill"
+                      style={{
+                        backgroundColor: statusBadge.color,
+                        color: '#000',
+                        fontWeight: 700
+                      }}
+                    >
+                      {statusBadge.label}
+                    </span>
+                  </div>
+                  <p className="ier-status-explanation">
+                    {interventionDetail.evidenceStatusInfo?.explanation ||
+                      'Recent geo-tagged field evidence and satellite observations are consistent.'}
+                  </p>
+                </div>
+
+                {/* 3. Three Core Highlight Cards (Field + Satellite + Terrain) */}
+                <div className="ier-triad-grid">
+                  {/* Field Card */}
+                  <div
+                    className={`ier-triad-card ${activeTab === 'EVIDENCE' ? 'ier-triad-card-active' : ''}`}
+                    onClick={() => setActiveTab('EVIDENCE')}
+                  >
+                    <div className="ier-triad-icon-row">
+                      <div className="ier-triad-icon ier-icon-green">
+                        <Camera size={15} />
+                      </div>
+                      <span className="ier-triad-label">FIELD EVIDENCE</span>
+                    </div>
+                    <div className="ier-triad-value">
+                      {(interventionDetail.fieldPhotos || []).length} Photos
+                    </div>
+                    <div className="ier-triad-sub">
+                      {interventionDetail.fieldPhotos?.length > 0
+                        ? `Latest: ${interventionDetail.fieldPhotos[0].date}`
+                        : 'No photos recorded'}
+                    </div>
+                    <div className="ier-triad-pill-row">
+                      <span className="ier-mini-pill">GPS: ✓ Available</span>
+                    </div>
+                  </div>
+
+                  {/* Satellite Card */}
+                  <div
+                    className={`ier-triad-card ${activeTab === 'CHANGE' ? 'ier-triad-card-active' : ''}`}
+                    onClick={() => setActiveTab('CHANGE')}
+                  >
+                    <div className="ier-triad-icon-row">
+                      <div className="ier-triad-icon ier-icon-blue">
+                        <Satellite size={15} />
+                      </div>
+                      <span className="ier-triad-label">SATELLITE CHANGE</span>
+                    </div>
+                    <div className="ier-triad-value">
+                      NDVI {interventionDetail.satelliteChange?.ndvi?.delta >= 0 ? '+' : ''}
+                      {interventionDetail.satelliteChange?.ndvi?.delta?.toFixed(2) || '0.00'}
+                    </div>
+                    <div className="ier-triad-sub">
+                      Water: {interventionDetail.satelliteChange?.waterExtentHa?.delta >= 0 ? '+' : ''}
+                      {interventionDetail.satelliteChange?.waterExtentHa?.delta?.toFixed(1) || '0.0'} ha
+                    </div>
+                    <div className="ier-triad-pill-row">
+                      <span className="ier-mini-pill">Sentinel-2 L2A</span>
+                    </div>
+                  </div>
+
+                  {/* Terrain Card */}
+                  <div
+                    className={`ier-triad-card ${activeTab === 'TERRAIN' ? 'ier-triad-card-active' : ''}`}
+                    onClick={() => setActiveTab('TERRAIN')}
+                  >
+                    <div className="ier-triad-icon-row">
+                      <div className="ier-triad-icon ier-icon-amber">
+                        <Mountain size={15} />
+                      </div>
+                      <span className="ier-triad-label">TERRAIN CONTEXT</span>
+                    </div>
+                    <div className="ier-triad-value">
+                      {interventionDetail.terrain?.flowAccumulation || 'HIGH'} Accum.
+                    </div>
+                    <div className="ier-triad-sub">
+                      Drainage: {interventionDetail.terrain?.drainageDistanceM || 38} m
+                    </div>
+                    <div className="ier-triad-pill-row">
+                      <span className="ier-mini-pill">Elev: {interventionDetail.terrain?.elevationM || 412}m</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 4. Tab Navigation */}
+                <div className="ier-tabs-nav">
+                  <button
+                    className={`ier-tab-btn ${activeTab === 'EVIDENCE' ? 'ier-tab-active' : ''}`}
+                    onClick={() => setActiveTab('EVIDENCE')}
+                  >
+                    <Camera size={14} />
+                    FIELD EVIDENCE ({interventionDetail.fieldPhotos?.length || 0})
+                  </button>
+                  <button
+                    className={`ier-tab-btn ${activeTab === 'CHANGE' ? 'ier-tab-active' : ''}`}
+                    onClick={() => setActiveTab('CHANGE')}
+                  >
+                    <Satellite size={14} />
+                    SATELLITE CHANGE
+                  </button>
+                  <button
+                    className={`ier-tab-btn ${activeTab === 'TERRAIN' ? 'ier-tab-active' : ''}`}
+                    onClick={() => setActiveTab('TERRAIN')}
+                  >
+                    <Mountain size={14} />
+                    TERRAIN & DEM
+                  </button>
+                </div>
+
+                {/* 5. Tab Content: FIELD EVIDENCE */}
+                {activeTab === 'EVIDENCE' && (
+                  <div className="ier-tab-body">
+                    <div className="ier-action-bar">
+                      <div className="ier-section-title">
+                        GEO-TAGGED FIELD PHOTOGRAPHS
+                      </div>
+                      <button
+                        className="ier-btn-secondary"
+                        onClick={() => setAddEvidenceModalOpen(true)}
+                      >
+                        <Plus size={14} />
+                        ADD EVIDENCE
                       </button>
-                    )}
-                    {(missionState === 'READY') && (
-                      <button className="mbs-btn primary" onClick={handleStart}>
-                        <Play size={13} fill="currentColor" /> START ACTIVE MISSION
-                      </button>
+                    </div>
+
+                    {(!interventionDetail.fieldPhotos || interventionDetail.fieldPhotos.length === 0) ? (
+                      <div className="ier-empty-state-card">
+                        <Camera size={28} className="text-gray-500" />
+                        <p>No geo-tagged field photographs currently recorded for this intervention.</p>
+                        <button
+                          className="ier-btn-primary ier-btn-sm"
+                          onClick={() => setAddEvidenceModalOpen(true)}
+                        >
+                          <Upload size={14} />
+                          Upload First Ground Photo
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="ier-photo-grid">
+                        {interventionDetail.fieldPhotos.map((photo, idx) => (
+                          <div
+                            key={photo.id || idx}
+                            className="ier-photo-card"
+                            onClick={() => setSelectedPhotoModal(photo)}
+                          >
+                            <div className="ier-photo-thumb-wrap">
+                              <img src={photo.thumbnail || photo.url} alt={photo.title} className="ier-photo-thumb" />
+                              <span className="ier-photo-type-badge">{photo.type || 'Field Photo'}</span>
+                            </div>
+                            <div className="ier-photo-card-info">
+                              <h4 className="ier-photo-title">{photo.title}</h4>
+                              <div className="ier-photo-meta-row">
+                                <span><Clock size={11} /> {photo.date}</span>
+                                <span><MapPin size={11} /> ±{photo.accuracyMeters || 3.0}m</span>
+                              </div>
+                              <p className="ier-photo-notes-snippet">{photo.notes}</p>
+                              <div className="ier-photo-author">By: {photo.photographer}</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                     )}
                   </div>
                 )}
-              </div>
 
-              {/* Candidate pool tab */}
-              {activeTab === 'candidate_pool' && (
-                <div className="ms-cards-row">
-                  {candidates.length === 0 && (
-                    <div style={{ color: '#6b7280', fontFamily: 'monospace', fontSize: 11, padding: '8px 0' }}>No candidates generated yet.</div>
-                  )}
-                  {candidates.map((c, idx) => {
-                    const sel = selectedIds.includes(c.id);
-                    const act = activeStopId === c.id;
-                    return (
+                {/* 6. Tab Content: SATELLITE CHANGE */}
+                {activeTab === 'CHANGE' && (
+                  <div className="ier-tab-body">
+                    <div className="ier-section-title">TEMPORAL CHANGE DETECTION</div>
+
+                    {/* Interactive Before / After Split Comparison */}
+                    <div
+                      className="ier-slider-container"
+                      onMouseDown={handleSliderMouseDown}
+                      onMouseMove={handleSliderMouseMove}
+                      onMouseUp={handleSliderMouseUp}
+                      onMouseLeave={handleSliderMouseUp}
+                    >
+                      {/* After Image */}
+                      <img
+                        src={interventionDetail.satelliteChange?.currentImageUrl || 'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=900&q=80'}
+                        alt="Current Satellite Observation"
+                        className="ier-slider-img"
+                      />
+                      <span className="ier-slider-badge ier-badge-after">AFTER: {afterPeriod}</span>
+
+                      {/* Before Image */}
                       <div
-                        key={c.id}
-                        className={`msc-card${act ? ' active' : ''}`}
-                        style={{ border: sel ? '1px solid rgba(16,185,129,0.4)' : undefined, background: sel ? 'rgba(16,185,129,0.06)' : undefined }}
-                        onClick={() => { setActiveStopId(c.id); map.current?.panTo({ lat: c.coords[1], lng: c.coords[0] }); map.current?.setZoom(15); }}
+                        className="ier-slider-clipped"
+                        style={{ width: `${sliderPos}%` }}
                       >
-                        <div className="msc-header">
-                          <span>SITE {String(idx + 1).padStart(2, '0')}</span>
-                          <PriBadge p={c.priority} />
-                        </div>
-                        <div className="msc-title">{c.title}</div>
-                        <div className="msc-desc">{c.gap || c.reason}</div>
-                        <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                          <ScoreBars score={c.score} />
-                          <button
-                            onClick={(e) => { e.stopPropagation(); toggleStop(c.id); }}
-                            style={{
-                              fontSize: 9, fontFamily: 'monospace', padding: '3px 8px', borderRadius: 3, cursor: 'pointer',
-                              border: sel ? '1px solid #ef4444' : '1px solid #10b981',
-                              color: sel ? '#ef4444' : '#10b981',
-                              background: 'transparent', transition: 'all 0.15s'
-                            }}
-                          >
-                            {sel ? 'REMOVE' : 'ADD'}
-                          </button>
-                        </div>
+                        <img
+                          src={interventionDetail.satelliteChange?.baselineImageUrl || 'https://images.unsplash.com/photo-1509316975850-ff9c5deb0cd9?auto=format&fit=crop&w=900&q=80'}
+                          alt="Baseline Satellite Observation"
+                          className="ier-slider-img"
+                        />
+                        <span className="ier-slider-badge ier-badge-before">BEFORE: {beforePeriod}</span>
                       </div>
-                    );
-                  })}
-                </div>
-              )}
 
-              {/* Active plan tab */}
-              {activeTab === 'active_plan' && (
-                <div className="ms-cards-row">
-                  {selectedIds.length === 0 && (
-                    <div style={{ color: '#6b7280', fontFamily: 'monospace', fontSize: 11, padding: '8px 0' }}>No stops in plan. Select candidates from the pool.</div>
-                  )}
-                  {selectedIds.map((id, idx) => {
-                    const c = candidates.find(x => x.id === id);
-                    if (!c) return null;
-                    const act = activeStopId === id;
-                    const isFirst = missionState === 'ACTIVE' && idx === 0;
-                    return (
-                      <div
-                        key={id}
-                        className={`msc-card${act ? ' active' : ''}`}
-                        onClick={() => { setActiveStopId(id); map.current?.panTo({ lat: c.coords[1], lng: c.coords[0] }); map.current?.setZoom(15); }}
-                      >
-                        <div className="msc-header">
-                          <span>STOP {String(idx + 1).padStart(2, '0')}</span>
-                          <span style={{ color: isFirst ? '#10b981' : '#38bdf8', fontSize: 9, fontFamily: 'monospace', fontWeight: 700 }}>
-                            {isFirst ? 'ACTIVE' : 'PLANNED'}
-                          </span>
+                      {/* Divider Handle */}
+                      <div className="ier-slider-handle" style={{ left: `${sliderPos}%` }}>
+                        <div className="ier-handle-line" />
+                        <div className="ier-handle-knob">
+                          <Sliders size={13} />
                         </div>
-                        <div className="msc-title">{c.title}</div>
-                        <div className="msc-desc">{c.objective || c.reason}</div>
-                        {route?.fieldDurationMinutes && (
-                          <div style={{ marginTop: 6, fontSize: 9, fontFamily: 'monospace', color: '#6b7280' }}>
-                            ~{Math.round(route.fieldDurationMinutes / selectedIds.length)} min field time
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              {/* History tab */}
-              {activeTab === 'history' && (
-                <div className="ms-cards-row">
-                  {history.length === 0 && (
-                    <div style={{ color: '#6b7280', fontFamily: 'monospace', fontSize: 11, padding: '8px 0' }}>No saved missions yet.</div>
-                  )}
-                  {history.slice(0, 10).map((m, i) => (
-                    <div key={m.id || i} className="msc-card">
-                      <div className="msc-header">
-                        <span>{m.id?.slice(0, 12)?.toUpperCase()}</span>
-                        <span style={{ color: '#6b7280' }}>{m.status}</span>
-                      </div>
-                      <div className="msc-title">{m.target?.name || 'Mission'}</div>
-                      <div className="msc-desc">{m.selectedStops?.length || 0} stops · {m.route?.driveDistance || '?'}</div>
-                      <div style={{ marginTop: 4, fontSize: 9, color: '#4b5563', fontFamily: 'monospace' }}>
-                        {m.timestamps?.generatedAt ? new Date(m.timestamps.generatedAt).toLocaleDateString() : ''}
                       </div>
                     </div>
-                  ))}
+
+                    {/* Quantitative Metric Comparison Grid */}
+                    <div className="ier-metrics-grid">
+                      {/* NDVI Metric */}
+                      <div className="ier-metric-box">
+                        <div className="ier-metric-label">VEGETATION DENSITY (NDVI)</div>
+                        <div className="ier-metric-transition">
+                          <span className="ier-metric-val-old">{interventionDetail.satelliteChange?.ndvi?.before || 0.34}</span>
+                          <ArrowRight size={13} className="text-gray-500" />
+                          <span className="ier-metric-val-new">{interventionDetail.satelliteChange?.ndvi?.after || 0.47}</span>
+                          <span className={`ier-metric-delta ${(interventionDetail.satelliteChange?.ndvi?.delta || 0) >= 0 ? 'ier-delta-pos' : 'ier-delta-neg'}`}>
+                            {(interventionDetail.satelliteChange?.ndvi?.delta || 0) >= 0 ? '+' : ''}
+                            {interventionDetail.satelliteChange?.ndvi?.delta?.toFixed(2) || '+0.13'}
+                          </span>
+                        </div>
+                        <p className="ier-metric-interp">
+                          {interventionDetail.satelliteChange?.ndvi?.interpretation || 'Vegetation index change within parcel'}
+                        </p>
+                      </div>
+
+                      {/* Water Extent Metric */}
+                      <div className="ier-metric-box">
+                        <div className="ier-metric-label">SURFACE WATER EXTENT</div>
+                        <div className="ier-metric-transition">
+                          <span className="ier-metric-val-old">{interventionDetail.satelliteChange?.waterExtentHa?.before || 2.7} ha</span>
+                          <ArrowRight size={13} className="text-gray-500" />
+                          <span className="ier-metric-val-new">{interventionDetail.satelliteChange?.waterExtentHa?.after || 4.9} ha</span>
+                          <span className={`ier-metric-delta ${(interventionDetail.satelliteChange?.waterExtentHa?.delta || 0) >= 0 ? 'ier-delta-pos' : 'ier-delta-neg'}`}>
+                            {(interventionDetail.satelliteChange?.waterExtentHa?.delta || 0) >= 0 ? '+' : ''}
+                            {interventionDetail.satelliteChange?.waterExtentHa?.delta?.toFixed(1) || '+2.2'} ha
+                          </span>
+                        </div>
+                        <p className="ier-metric-interp">
+                          {interventionDetail.satelliteChange?.waterExtentHa?.interpretation || 'Surface water expansion'}
+                        </p>
+                      </div>
+
+                      {/* Land Cover Transition */}
+                      <div className="ier-metric-box ier-metric-box-full">
+                        <div className="ier-metric-label">LAND USE / COVER TRANSITION</div>
+                        <div className="ier-lulc-row">
+                          <span className="ier-lulc-chip ier-lulc-before">
+                            {interventionDetail.satelliteChange?.lulc?.before || 'Barren / Fallow'}
+                          </span>
+                          <ArrowRight size={13} className="text-cyan-400" />
+                          <span className="ier-lulc-chip ier-lulc-after">
+                            {interventionDetail.satelliteChange?.lulc?.after || 'Water Storage & Crop'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Observed Change Narrative */}
+                    <div className="ier-narrative-box">
+                      <div className="ier-narrative-header">
+                        <Info size={14} className="text-cyan-400" />
+                        <span>OBSERVED SATELLITE CHANGE</span>
+                      </div>
+                      <p className="ier-narrative-text">
+                        "{interventionDetail.satelliteChange?.observedChangeSummary ||
+                          'Vegetation and water-related indicators increased during the selected comparison period.'}"
+                      </p>
+                      <div className="ier-disclaimer-note">
+                        Note: Satellite observations indicate change in spectral indices during the comparison period. Causal attribution is not inferred.
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* 7. Tab Content: TERRAIN & HYDROLOGY */}
+                {activeTab === 'TERRAIN' && (
+                  <div className="ier-tab-body">
+                    <div className="ier-section-title">DEM TERRAIN & HYDROLOGICAL CONTEXT</div>
+
+                    <div className="ier-terrain-grid">
+                      <div className="ier-terrain-card">
+                        <span className="ier-terrain-label">ELEVATION</span>
+                        <span className="ier-terrain-val">{interventionDetail.terrain?.elevationM || 412} m</span>
+                        <span className="ier-terrain-sub">Above Mean Sea Level</span>
+                      </div>
+
+                      <div className="ier-terrain-card">
+                        <span className="ier-terrain-label">SLOPE GRADIENT</span>
+                        <span className="ier-terrain-val">{interventionDetail.terrain?.slopeDeg || 7.2}°</span>
+                        <span className="ier-terrain-sub">Valley Flank</span>
+                      </div>
+
+                      <div className="ier-terrain-card">
+                        <span className="ier-terrain-label">FLOW ACCUMULATION</span>
+                        <span className="ier-terrain-val ier-val-highlight">{interventionDetail.terrain?.flowAccumulation || 'HIGH'}</span>
+                        <span className="ier-terrain-sub">{interventionDetail.terrain?.flowAccumulationVal || '14,250 cells'}</span>
+                      </div>
+
+                      <div className="ier-terrain-card">
+                        <span className="ier-terrain-label">NEAREST DRAINAGE</span>
+                        <span className="ier-terrain-val">{interventionDetail.terrain?.drainageDistanceM || 38} m</span>
+                        <span className="ier-terrain-sub">Order {interventionDetail.terrain?.streamOrder || 3} Stream</span>
+                      </div>
+                    </div>
+
+                    {/* Terrain Explanation */}
+                    <div className="ier-narrative-box">
+                      <div className="ier-narrative-header">
+                        <Mountain size={14} className="text-emerald-400" />
+                        <span>TERRAIN & HYDROLOGY ANALYSIS</span>
+                      </div>
+                      <p className="ier-narrative-text">
+                        "{interventionDetail.terrain?.explanation ||
+                          'Terrain context indicates that the intervention is located near a high-flow-accumulation drainage area.'}"
+                      </p>
+                      <div className="ier-disclaimer-note">
+                        Data Source: {interventionDetail.terrain?.dataSource || 'DEM DEMONSTRATION DATA (SRTM 30m derived)'}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* 8. Structured Factual Assessment Card */}
+                <div className="ier-card ier-assessment-card">
+                  <div className="ier-assessment-header">
+                    <ShieldCheck size={16} className="text-cyan-400" />
+                    <span>SYNTHESIZED EVIDENCE ASSESSMENT</span>
+                  </div>
+                  <p className="ier-assessment-body">
+                    {interventionDetail.assessment?.summary ||
+                      'Field evidence confirms a geo-referenced intervention at the selected location. Satellite analysis shows increased vegetation and water-related indicators during the comparison period. Terrain analysis indicates proximity to a high-flow-accumulation drainage area.'}
+                  </p>
+                  <div className="ier-assessment-footer">
+                    <span>Structured Decision-Support Heuristic · PS26015 Compliant</span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </section>
+        </div>
+      </main>
+
+      {/* ─── Photo Detail Modal ─────────────────────────────────────── */}
+      {selectedPhotoModal && (
+        <div className="ier-modal-backdrop" onClick={() => setSelectedPhotoModal(null)}>
+          <div className="ier-modal-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="ier-modal-header">
+              <div>
+                <h3 className="ier-modal-title">{selectedPhotoModal.title}</h3>
+                <span className="ier-modal-sub">{selectedPhotoModal.type} · {selectedPhotoModal.date}</span>
+              </div>
+              <button className="ier-modal-close" onClick={() => setSelectedPhotoModal(null)}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="ier-modal-body">
+              <div className="ier-modal-img-wrap">
+                <img src={selectedPhotoModal.url} alt={selectedPhotoModal.title} className="ier-modal-img" />
+              </div>
+
+              <div className="ier-modal-meta-grid">
+                <div className="ier-meta-item">
+                  <span className="ier-meta-lbl">GEO-COORDINATES</span>
+                  <span className="ier-meta-val">{selectedPhotoModal.lat?.toFixed(5)}°N, {selectedPhotoModal.lng?.toFixed(5)}°E</span>
+                </div>
+                <div className="ier-meta-item">
+                  <span className="ier-meta-lbl">GPS ACCURACY</span>
+                  <span className="ier-meta-val">±{selectedPhotoModal.accuracyMeters || 3.0} meters</span>
+                </div>
+                <div className="ier-meta-item">
+                  <span className="ier-meta-lbl">DEVICE / SENSOR</span>
+                  <span className="ier-meta-val">{selectedPhotoModal.device || 'Mobile GPS'}</span>
+                </div>
+                <div className="ier-meta-item">
+                  <span className="ier-meta-lbl">INSPECTOR</span>
+                  <span className="ier-meta-val">{selectedPhotoModal.photographer || 'Field Officer'}</span>
+                </div>
+              </div>
+
+              {selectedPhotoModal.notes && (
+                <div className="ier-modal-notes">
+                  <span className="ier-meta-lbl">FIELD INSPECTION NOTES</span>
+                  <p className="ier-notes-text">{selectedPhotoModal.notes}</p>
                 </div>
               )}
             </div>
-          )}
+          </div>
         </div>
-      </div>
-      
-      {showMissionForm && <MissionFormModal />}
+      )}
+
+      {/* ─── Add Field Evidence Modal ───────────────────────────────── */}
+      {addEvidenceModalOpen && (
+        <div className="ier-modal-backdrop" onClick={() => setAddEvidenceModalOpen(false)}>
+          <div className="ier-modal-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="ier-modal-header">
+              <div>
+                <h3 className="ier-modal-title">ADD GEO-TAGGED FIELD EVIDENCE</h3>
+                <span className="ier-modal-sub">Attach field inspection photograph and ground observations</span>
+              </div>
+              <button className="ier-modal-close" onClick={() => setAddEvidenceModalOpen(false)}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleAddPhotoSubmit} className="ier-form">
+              <div className="ier-form-group">
+                <label className="ier-form-lbl">PHOTO TITLE / DESCRIPTION</label>
+                <input
+                  type="text"
+                  className="ier-form-input"
+                  placeholder="e.g. Spillway Inspection & Basin Storage"
+                  value={newPhotoForm.title}
+                  onChange={(e) => setNewPhotoForm(p => ({ ...p, title: e.target.value }))}
+                  required
+                />
+              </div>
+
+              <div className="ier-form-row">
+                <div className="ier-form-group">
+                  <label className="ier-form-lbl">INSPECTION TYPE</label>
+                  <select
+                    className="ier-form-input"
+                    value={newPhotoForm.type}
+                    onChange={(e) => setNewPhotoForm(p => ({ ...p, type: e.target.value }))}
+                  >
+                    <option value="Post-Monsoon Storage">Post-Monsoon Storage</option>
+                    <option value="Embankment Inspection">Embankment Inspection</option>
+                    <option value="Spillway Audit">Spillway Audit</option>
+                    <option value="Routine Verification">Routine Verification</option>
+                    <option value="Damage Assessment">Damage Assessment</option>
+                  </select>
+                </div>
+
+                <div className="ier-form-group">
+                  <label className="ier-form-lbl">FIELD OFFICER NAME</label>
+                  <input
+                    type="text"
+                    className="ier-form-input"
+                    value={newPhotoForm.photographer}
+                    onChange={(e) => setNewPhotoForm(p => ({ ...p, photographer: e.target.value }))}
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="ier-form-row">
+                <div className="ier-form-group">
+                  <label className="ier-form-lbl">LATITUDE (°N)</label>
+                  <input
+                    type="number"
+                    step="0.0001"
+                    className="ier-form-input"
+                    placeholder={interventionDetail?.lat?.toFixed(4) || '21.8294'}
+                    value={newPhotoForm.lat}
+                    onChange={(e) => setNewPhotoForm(p => ({ ...p, lat: e.target.value }))}
+                  />
+                </div>
+                <div className="ier-form-group">
+                  <label className="ier-form-lbl">LONGITUDE (°E)</label>
+                  <input
+                    type="number"
+                    step="0.0001"
+                    className="ier-form-input"
+                    placeholder={interventionDetail?.lng?.toFixed(4) || '73.7351'}
+                    value={newPhotoForm.lng}
+                    onChange={(e) => setNewPhotoForm(p => ({ ...p, lng: e.target.value }))}
+                  />
+                </div>
+              </div>
+
+              <div className="ier-form-group">
+                <label className="ier-form-lbl">FIELD INSPECTION OBSERVATIONS</label>
+                <textarea
+                  className="ier-form-textarea"
+                  rows={3}
+                  placeholder="Record structural condition, water depth, siltation, or vegetation observations..."
+                  value={newPhotoForm.notes}
+                  onChange={(e) => setNewPhotoForm(p => ({ ...p, notes: e.target.value }))}
+                />
+              </div>
+
+              <div className="ier-form-actions">
+                <button
+                  type="button"
+                  className="ier-btn-secondary"
+                  onClick={() => setAddEvidenceModalOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button type="submit" className="ier-btn-primary">
+                  <Upload size={14} />
+                  Save Geo-Tagged Evidence
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Toast Notification ─────────────────────────────────────── */}
+      {toastMessage && (
+        <div className="ier-toast">
+          <CheckCircle2 size={16} className="text-emerald-400" />
+          <span>{toastMessage}</span>
+        </div>
+      )}
     </div>
   );
 }

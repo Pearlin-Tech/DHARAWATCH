@@ -13,7 +13,7 @@ export default function AppNavigation() {
     { id: 'explore', icon: MapIcon, label: 'Explore', path: '/explore' },
     { id: 'watershed', icon: Layers, label: 'Watershed', path: '/watershed' },
     { id: 'field', icon: MapPin, label: 'Field', path: '/field' },
-    { id: 'mission', icon: Navigation, label: 'Mission', path: '/mission' },
+    { id: 'mission', icon: ShieldCheck, label: 'Evidence Review', path: '/mission' },
     { id: 'ask', icon: MessageSquare, label: 'Ask', path: '/ask' },
     { id: 'compare', icon: FileStack, label: 'Compare', path: '/compare' },
     { id: 'monitor', icon: Activity, label: 'Monitor', path: '/watch' },

@@ -1654,6 +1654,234 @@ app.delete('/api/mission-stops/:id', async (req, res) => {
 });
 
 // =========================================================
+// FIELD VERIFICATION PLANNER API
+// =========================================================
+
+// POST /api/mission/analyze — Evidence-gap candidate analysis
+// Returns verification candidates with priority scores for a given watershed.
+app.post('/api/mission/analyze', async (req, res) => {
+  try {
+    const {
+      getWatershedInterventions,
+      buildVerificationCandidate,
+      applyPriorityFilter,
+      buildVerificationRoute
+    } = await import('./server/verificationEngine.js');
+
+    const { watershedId, priorityFilter = 'ALL', origin, maxStops = 6, fieldWindowMinutes = 300 } = req.body;
+    if (!watershedId) return res.status(400).json({ error: 'watershedId required' });
+
+    // Load interventions (real DB or demo fallback)
+    const interventions = await getWatershedInterventions(watershedId, getAllRows);
+
+    // Build verification candidates with priority scores
+    let candidates = interventions.map(buildVerificationCandidate);
+
+    // Sort by priority score descending
+    candidates.sort((a, b) => b.priorityScore - a.priorityScore);
+
+    // Apply priority filter
+    const filtered = applyPriorityFilter(candidates, priorityFilter);
+
+    // Generate route plan if origin is provided
+    let plan = null;
+    if (origin && origin.lat) {
+      plan = buildVerificationRoute(filtered, origin, maxStops, fieldWindowMinutes);
+    }
+
+    res.json({
+      success: true,
+      candidates: filtered,
+      allCandidates: candidates,
+      plan,
+      meta: {
+        watershedId,
+        priorityFilter,
+        maxStops,
+        fieldWindowMinutes,
+        totalInterventions: interventions.length,
+        filteredCount: filtered.length
+      }
+    });
+  } catch (err) {
+    console.error('[VerificationPlanner] analyze error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH /api/mission/update-evidence — Update field evidence for a candidate
+// Used when field officer captures evidence and submits — updates candidate priority.
+app.patch('/api/mission/update-evidence', async (req, res) => {
+  try {
+    const { interventionId, photoCount, latestPhotoDate, notes, evidenceStatus } = req.body;
+    if (!interventionId) return res.status(400).json({ error: 'interventionId required' });
+
+    // Try to update real DB intervention if it exists
+    let updated = null;
+    try {
+      const existing = await getRow('interventions', interventionId);
+      if (existing) {
+        const patch = {
+          ...existing,
+          photoCount: photoCount !== undefined ? photoCount : (existing.photoCount || 0),
+          latestPhotoDate: latestPhotoDate || existing.latestPhotoDate,
+          notes: notes || existing.notes,
+          updatedAt: new Date().toISOString()
+        };
+        await updateRow('interventions', interventionId, patch);
+        updated = patch;
+      }
+    } catch (e) {
+      console.warn('[VerificationPlanner] DB update failed (demo mode):', e.message);
+    }
+
+    // Recalculate priority for the updated intervention
+    const { buildVerificationCandidate, DEMO_INTERVENTIONS } = await import('./server/verificationEngine.js');
+    // Find base data from demo dataset if not in DB
+    const demoBase = DEMO_INTERVENTIONS.find(d => d.id === interventionId) || {};
+    const interventionData = updated || {
+      ...demoBase,
+      id: interventionId,
+      photoCount: photoCount !== undefined ? photoCount : (demoBase.photoCount || 1),
+      latestPhotoDate: latestPhotoDate || new Date().toISOString().split('T')[0],
+    };
+    const updatedCandidate = buildVerificationCandidate(interventionData);
+
+    res.json({
+      success: true,
+      updatedCandidate,
+      candidate: updatedCandidate,
+      message: 'Evidence updated and priority recalculated'
+    });
+  } catch (err) {
+    console.error('[VerificationPlanner] update-evidence error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =========================================================
+// INTERVENTION EVIDENCE REVIEW API (SIH26015 Supporting Feature)
+// =========================================================
+
+// GET /api/intervention-review/watersheds — list watersheds
+app.get('/api/intervention-review/watersheds', async (req, res) => {
+  try {
+    const { getWatershedList } = await import('./server/interventionReviewEngine.js');
+    const list = getWatershedList();
+    res.json({ success: true, watersheds: list });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/intervention-review/interventions — list interventions for watershed
+app.get('/api/intervention-review/interventions', async (req, res) => {
+  try {
+    const { watershedId } = req.query;
+    if (!watershedId) return res.status(400).json({ error: 'watershedId required' });
+    const { getInterventionsForWatershed, calculateEvidenceStatus } = await import('./server/interventionReviewEngine.js');
+    const items = getInterventionsForWatershed(watershedId);
+    const mapped = items.map(item => ({
+      id: item.id,
+      name: item.name,
+      type: item.type,
+      village: item.village,
+      district: item.district,
+      lat: item.lat,
+      lng: item.lng,
+      status: item.status,
+      photoCount: (item.fieldPhotos || []).length,
+      latestPhotoDate: (item.fieldPhotos && item.fieldPhotos.length > 0) ? item.fieldPhotos[0].date : null,
+      evidenceStatus: calculateEvidenceStatus(item).status,
+      isReviewed: !!item.isReviewed
+    }));
+    res.json({ success: true, interventions: mapped });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/intervention-review/detail/:id — full multi-source evidence package
+app.get('/api/intervention-review/detail/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { getInterventionDetail } = await import('./server/interventionReviewEngine.js');
+    const detail = getInterventionDetail(id);
+    if (!detail) return res.status(404).json({ error: 'Intervention not found' });
+    res.json({ success: true, intervention: detail });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/intervention-review/add-photo — add geotagged field photo evidence
+app.post('/api/intervention-review/add-photo', async (req, res) => {
+  try {
+    const { interventionId, title, url, notes, photographer, type, lat, lng } = req.body;
+    if (!interventionId) return res.status(400).json({ error: 'interventionId required' });
+
+    const { REVIEW_INTERVENTIONS, calculateEvidenceStatus, buildStructuredAssessment } = await import('./server/interventionReviewEngine.js');
+    const target = REVIEW_INTERVENTIONS.find(i => i.id === interventionId);
+
+    const newPhoto = {
+      id: `fp-${Date.now()}`,
+      title: title || 'Field Ground Inspection',
+      url: url || 'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1200&q=80',
+      thumbnail: url || 'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=400&q=80',
+      date: new Date().toISOString().split('T')[0],
+      lat: parseFloat(lat) || target?.lat || 21.8294,
+      lng: parseFloat(lng) || target?.lng || 73.7351,
+      accuracyMeters: 3.5,
+      photographer: photographer || 'Field Officer',
+      type: type || 'Verification Audit',
+      notes: notes || 'Geo-tagged field observation recorded.',
+      device: 'Mobile GPS Tagged',
+      exif: { iso: 100, focalLength: '26mm', shutter: '1/500s', direction: 'North' }
+    };
+
+    if (target) {
+      if (!target.fieldPhotos) target.fieldPhotos = [];
+      target.fieldPhotos.unshift(newPhoto);
+    }
+
+    const updatedDetail = target ? {
+      ...target,
+      evidenceStatus: calculateEvidenceStatus(target).status,
+      evidenceStatusInfo: calculateEvidenceStatus(target),
+      assessment: buildStructuredAssessment(target, calculateEvidenceStatus(target))
+    } : null;
+
+    res.json({ success: true, photo: newPhoto, intervention: updatedDetail });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/intervention-review/toggle-review — toggle review watchlist flag
+app.post('/api/intervention-review/toggle-review', async (req, res) => {
+  try {
+    const { interventionId, isReviewed, notes } = req.body;
+    if (!interventionId) return res.status(400).json({ error: 'interventionId required' });
+
+    const { REVIEW_INTERVENTIONS } = await import('./server/interventionReviewEngine.js');
+    const target = REVIEW_INTERVENTIONS.find(i => i.id === interventionId);
+    if (target) {
+      target.isReviewed = isReviewed !== undefined ? isReviewed : !target.isReviewed;
+      target.reviewStatus = target.isReviewed ? 'REVIEWED' : 'PENDING_REVIEW';
+      if (notes) target.reviewNotes = notes;
+    }
+
+    res.json({
+      success: true,
+      isReviewed: target ? target.isReviewed : isReviewed,
+      message: target?.isReviewed ? 'Intervention marked as Reviewed.' : 'Intervention added to review list.'
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =========================================================
 // INTELLIGENCE / COMMAND API
 // =========================================================
 

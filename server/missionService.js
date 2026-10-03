@@ -13,14 +13,38 @@ async function reverseGeocode(lat, lon) {
 
 export async function searchMissionWatersheds(query) {
   const wss = await searchWatersheds(query);
-  return wss;
+  if (wss && wss.length > 0) return wss;
+
+  // Fallback to known/demo watersheds matching text query
+  try {
+    const { DEMO_WATERSHEDS } = await import('./verificationEngine.js');
+    const qLower = (query || '').toLowerCase().trim();
+    if (!qLower) return DEMO_WATERSHEDS;
+    const matches = DEMO_WATERSHEDS.filter(w =>
+      w.name.toLowerCase().includes(qLower) ||
+      w.id.toLowerCase().includes(qLower) ||
+      (w.state && w.state.toLowerCase().includes(qLower))
+    );
+    if (matches.length > 0) {
+      return matches.map(w => ({
+        id: w.id,
+        name: w.name,
+        areaKm2: w.areaKm2,
+        centroid: { lat: w.lat, lon: w.lng },
+        state: w.state,
+        dataStatus: 'AVAILABLE'
+      }));
+    }
+  } catch (e) {
+    console.warn('[searchMissionWatersheds] Demo lookup error:', e.message);
+  }
+
+  return [];
 }
 
 export async function searchOrigins(query) {
-  // Use Google Maps Places API if available
-  const apiKey = process.env.VITE_GOOGLE_MAPS_API_KEY;
-  if (!apiKey || !query || query.length < 3) return [];
-  
+  if (!query || query.length < 2) return [];
+
   // Fallback known locations for Indian field bases
   const knownBases = [
     { id: 'base-bharuch', name: 'Bharuch, Gujarat', lat: 21.70, lng: 72.97, type: 'FIELD_BASE' },
@@ -38,48 +62,34 @@ export async function searchOrigins(query) {
     { id: 'base-hyderabad', name: 'Hyderabad, Telangana', lat: 17.38, lng: 78.49, type: 'FIELD_BASE' },
     { id: 'base-chennai', name: 'Chennai, Tamil Nadu', lat: 13.08, lng: 80.27, type: 'FIELD_BASE' },
     { id: 'base-kolkata', name: 'Kolkata, West Bengal', lat: 22.57, lng: 88.36, type: 'FIELD_BASE' },
+    { id: 'base-kevadiya', name: 'Kevadiya Field Station, Gujarat', lat: 21.83, lng: 73.74, type: 'FIELD_BASE' },
   ];
-  
-  // Try Google Places API (New) first
-  try {
-    const url = `https://places.googleapis.com/v1/places:autocomplete?key=${apiKey}`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input: query }),
-      signal: AbortSignal.timeout(5000)
-    });
-    const data = await res.json();
-    if (data.suggestions) {
-      return data.suggestions.map(s => ({
-        id: s.placePrediction?.placeId || `place-${Date.now()}`,
-        name: s.placePrediction?.text?.text || query,
-        type: 'SEARCH_RESULT'
-      }));
+
+  // Try Google Maps Places API if key available
+  const apiKey = process.env.VITE_GOOGLE_MAPS_API_KEY;
+  if (apiKey) {
+    // Try Google Places API (New) first
+    try {
+      const url = `https://places.googleapis.com/v1/places:autocomplete?key=${apiKey}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: query }),
+        signal: AbortSignal.timeout(5000)
+      });
+      const data = await res.json();
+      if (data.suggestions) {
+        return data.suggestions.map(s => ({
+          id: s.placePrediction?.placeId || `place-${Date.now()}`,
+          name: s.placePrediction?.text?.text || query,
+          type: 'SEARCH_RESULT'
+        }));
+      }
+    } catch (e) {
+      console.warn('[Mission] Places API (New) error:', e.message);
     }
-  } catch (e) {
-    console.warn('[Mission] Places API (New) error:', e.message);
   }
-  
-  // Try legacy Places API
-  try {
-    const url = `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(query)}&key=${apiKey}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-    const data = await res.json();
-    if (data.status === 'OK') {
-      return data.predictions.map(p => ({
-        id: p.place_id,
-        name: p.description,
-        type: 'SEARCH_RESULT'
-      }));
-    }
-    if (data.status !== 'ZERO_RESULTS') {
-      console.warn('[Mission] Places API status:', data.status, data.error_message);
-    }
-  } catch (e) {
-    console.warn('[Mission] Legacy Places API error:', e.message);
-  }
-  
+
   // Fallback to known bases matching query
   const lowerQuery = query.toLowerCase();
   const matches = knownBases.filter(b => 
@@ -89,9 +99,9 @@ export async function searchOrigins(query) {
   if (matches.length > 0) {
     return matches.map(b => ({ id: b.id, name: b.name, type: b.type, lat: b.lat, lng: b.lng }));
   }
-  
+
   // Final fallback - return query as manual entry
-  return [{ id: `manual-${Date.now()}`, name: query, type: 'MANUAL' }];
+  return [{ id: `manual-${Date.now()}`, name: query, type: 'MANUAL', lat: 21.70, lng: 72.97 }];
 }
 
 export async function resolveOriginDetails(placeId) {

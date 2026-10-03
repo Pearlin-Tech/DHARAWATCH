@@ -595,7 +595,7 @@ export default function Explore() {
           <NavItem icon={<MapIcon size={20} />} label="Explore" path="/explore" active expanded={isNavExpanded} />
           <NavItem icon={<Layers size={20} />} label="Watershed" path="/watershed" expanded={isNavExpanded} />
           <NavItem icon={<MapPin size={20} />} label="Field" path="/field" expanded={isNavExpanded} />
-          <NavItem icon={<Navigation size={20} />} label="Mission" path="/mission" expanded={isNavExpanded} />
+          <NavItem icon={<ShieldCheck size={20} />} label="Evidence Review" path="/mission" expanded={isNavExpanded} />
           <NavItem icon={<MessageSquare size={20} />} label="Ask" path="/ask" expanded={isNavExpanded} />
           <NavItem icon={<FileStack size={20} />} label="Compare" path="/compare" expanded={isNavExpanded} />
           <NavItem icon={<Activity size={20} />} label="Monitor" path="/watch" expanded={isNavExpanded} />
