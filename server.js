@@ -14,16 +14,11 @@ import { executeGeospatialAnalysis } from './server/services/geospatial/analysis
 import { generateGroundedExplanation } from './server/services/ai/llmExplainer.js';
 import { parseGeoTiffBuffer } from './server/services/geospatial/rasterParser.js';
 import { initEE, getCompareData, healthCheck } from './server-gee.js';
-import {
-  resolveWatershedByCoord,
-  searchWatersheds,
-  getWatershedContext,
-  getFingerprintSummary,
-  getAttentionSummary,
-  getTimelineSummary,
-  getLayerTileUrl,
-  setEEReady
-} from './server/watershedService.js';
+import { resolveWatershedByCoord, searchWatersheds } from './server/watershedService.js';
+import { registerGeoRoutes } from './server/geoRoutes.js';
+import { setStore as setGeoStore, setEEReady, computeLayerTile, ensureSeeds } from './server/geospatial.js';
+import { WATERSHED_LAYERS } from './src/shared/layerRegistry.js';
+import { geocodePlace } from './server/geocoder.js';
 import {
   validateImageFile, storePhoto, extractExif, analyzeImageWithAI,
   resolveWatershedForObservation, getSatelliteContextForLocation,
@@ -33,8 +28,8 @@ import { getIntelligenceOverview, setDbHelpers } from './server/services/intelli
 
 dotenv.config({ path: path.join(process.cwd(), '.env.local') });
 
-// Initialize Earth Engine in background
-initEE()
+// Initialize Earth Engine BEFORE starting server
+await initEE()
   .then((ok) => { setEEReady(!!ok); })
   .catch(err => { console.warn('[EE] Init error (non-fatal):', err.message); setEEReady(false); });
 
@@ -79,7 +74,7 @@ db.serialize(() => {
     'evidence', 'reports', 'measurements', 'watches',
     'watch_passes', 'timeline_events', 'exports', 'ai_queries',
     'raster_attachments', 'compare', 'watersheds', 'field_observations',
-    'evidence_gaps', 'missions'
+    'evidence_gaps', 'missions', 'interventions', 'mission_stops'
   ];
 
 
@@ -136,6 +131,9 @@ const deleteRow = (table, id) => {
     });
   });
 };
+
+const wsError = (res, code, message, status = 500) => res.status(status).json({ success: false, error: { code, message } });
+const wsResponse = (res, data, status = 200) => res.status(status).json({ success: true, data });
 
 // Initialize Intelligence DB helpers
 setDbHelpers(getAllRows, getRow);
@@ -242,20 +240,47 @@ app.get('/api/detection/:id', (req, res) => {
 // EARTH ENGINE HEALTH
 app.get('/api/earth-engine/health', async (req, res) => {
   try {
-    // Just a basic check that variables are present
-    const hasProject = !!process.env.EARTH_ENGINE_PROJECT_ID;
-    const hasEmail = !!process.env.EARTH_ENGINE_CLIENT_EMAIL;
-    const hasKey = !!process.env.EARTH_ENGINE_PRIVATE_KEY;
-
-    res.json({
-      authenticated: hasProject && hasEmail && hasKey,
-      projectConfigured: hasProject,
-      initialized: true // If we wanted true runtime check we'd call auth.js
-    });
+    const result = await healthCheck();
+    if (!result.ok) {
+      return res.status(500).json(result);
+    }
+    res.json(result);
   } catch (err) {
-    res.status(500).json({ error: 'EARTH ENGINE PROVIDER ERROR', message: err.message });
+    res.status(500).json({
+      ok: false,
+      earthEngine: { authenticated: false, initialized: false },
+      error: { stage: 'server', code: 'INTERNAL_ERROR', message: err.message }
+    });
   }
 });
+
+
+// EARTH ENGINE LAYERS HEALTH
+app.get('/api/earth-engine/layers/health', async (req, res) => {
+  try {
+    // Neutral probe polygon (small box, Congo basin) — purely a connectivity test of each dataset.
+    const geometry = {
+      type: 'Polygon',
+      coordinates: [[[15.2, -4.4], [15.4, -4.4], [15.4, -4.2], [15.2, -4.2], [15.2, -4.4]]]
+    };
+    const layersStatus = {};
+    for (const key of Object.keys(WATERSHED_LAYERS)) {
+      if (key === 'boundary') { layersStatus[key] = 'PASS'; continue; }
+      try {
+        const layerRes = await computeLayerTile({ geometry }, key);
+        layersStatus[key] = layerRes.available ? 'PASS' : (layerRes.reason || layerRes.dataStatus || 'FAIL');
+      } catch (e) { layersStatus[key] = `FAIL: ${e.message}`; }
+    }
+
+    res.json({
+      ok: true,
+      layers: layersStatus
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 
 // =========================================================
 // GEOTIFF / TIFF RASTER UPLOAD ENDPOINT
@@ -1075,254 +1100,19 @@ app.get('/api/field/context', async (req, res) => {
 });
 
 // =========================================================
-// WATERSHED API — dedicated routes (before generic catch-all)
+// WATERSHED / GEOSPATIAL API — see server/geoRoutes.js
 // =========================================================
+registerGeoRoutes(app, { getRow, getAllRows, insertRow, updateRow, deleteRow });
+setGeoStore({ getRow, getAllRows, insertRow, updateRow, deleteRow });
 
-// Response contract helper
-const wsResponse = (res, data, status = 200) => res.status(status).json({
-  success: true,
-  data,
-  requestId: `ws-${Date.now()}`
-});
-
-const wsError = (res, code, message, status = 500) => res.status(status).json({
-  success: false,
-  error: { code, message },
-  requestId: `ws-${Date.now()}`
-});
-
-// GET /api/watersheds/health
-app.get('/api/watersheds/health', (req, res) => {
-  res.json({
-    earthEngine: { authenticated: true, initialized: true },
-    watershedResolver: { ready: true },
-    database: { ready: true },
-    cache: { ready: true }
-  });
-});
-
-// GET /api/watersheds/resolve?lat=&lon=
-app.get('/api/watersheds/resolve', async (req, res) => {
-  try {
-    const lat = parseFloat(req.query.lat);
-    const lon = parseFloat(req.query.lon);
-    if (isNaN(lat) || isNaN(lon)) {
-      return wsError(res, 'INVALID_COORDS', 'lat and lon are required numeric parameters', 400);
-    }
-    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
-      return wsError(res, 'OUT_OF_RANGE', 'Coordinates out of valid range', 400);
-    }
-    const ctx = await resolveWatershedByCoord(lat, lon);
-    wsResponse(res, ctx);
-  } catch (err) {
-    console.error('[WS Route] resolve error:', err.message);
-    wsError(res, 'RESOLVE_ERROR', err.message);
-  }
-});
-
-// GET /api/watersheds/search?q=
-app.get('/api/watersheds/search', async (req, res) => {
+// Legacy place geocoder (kept for older consumers)
+app.get('/api/geocode', async (req, res) => {
   try {
     const q = (req.query.q || '').trim();
-    if (!q) return wsResponse(res, []);
-    const results = await searchWatersheds(q);
-    wsResponse(res, results);
+    if (!q || q.length < 2) return res.json([]);
+    res.json(await geocodePlace(q));
   } catch (err) {
-    wsError(res, 'SEARCH_ERROR', err.message);
-  }
-});
-
-// GET /api/watersheds/:id/context
-app.get('/api/watersheds/:id/context', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const geometry = req.query.geometry ? JSON.parse(req.query.geometry) : null;
-    const ctx = await getWatershedContext(id, geometry);
-    wsResponse(res, ctx);
-  } catch (err) {
-    wsError(res, 'CONTEXT_ERROR', err.message);
-  }
-});
-
-// GET /api/watersheds/:id/fingerprint
-app.get('/api/watersheds/:id/fingerprint', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const geometry = req.query.geometry ? JSON.parse(req.query.geometry) : null;
-    const fp = await getFingerprintSummary(id, geometry);
-    wsResponse(res, fp);
-  } catch (err) {
-    wsError(res, 'FINGERPRINT_ERROR', err.message);
-  }
-});
-
-// GET /api/watersheds/:id/attention
-app.get('/api/watersheds/:id/attention', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const geometry = req.query.geometry ? JSON.parse(req.query.geometry) : null;
-    const attention = await getAttentionSummary(id, geometry);
-    wsResponse(res, attention);
-  } catch (err) {
-    wsError(res, 'ATTENTION_ERROR', err.message);
-  }
-});
-
-// GET /api/watersheds/:id/timeline
-app.get('/api/watersheds/:id/timeline', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const geometry = req.query.geometry ? JSON.parse(req.query.geometry) : null;
-    const timeline = await getTimelineSummary(id, geometry);
-    wsResponse(res, timeline);
-  } catch (err) {
-    wsError(res, 'TIMELINE_ERROR', err.message);
-  }
-});
-
-// GET /api/watersheds/:id/layers/:layerId  — returns EE tile URL
-app.get('/api/watersheds/:id/layers/:layerId', async (req, res) => {
-  try {
-    const { id, layerId } = req.params;
-    const { startDate, endDate, geometry } = req.query;
-    const geom = geometry ? JSON.parse(geometry) : null;
-    const layer = await getLayerTileUrl(id, layerId, geom, startDate, endDate);
-    wsResponse(res, layer);
-  } catch (err) {
-    wsError(res, 'LAYER_ERROR', err.message);
-  }
-});
-
-// GET /api/watersheds/:id/layers  — list available layers
-app.get('/api/watersheds/:id/layers', async (req, res) => {
-  wsResponse(res, {
-    available: [
-      { id: 'boundary', group: 'WATERSHED', displayName: 'Watershed Boundary', source: 'HydroSHEDS', type: 'vector' },
-      { id: 'drainage', group: 'WATERSHED', displayName: 'Drainage Network', source: 'HydroSHEDS', type: 'vector' },
-      { id: 'ndvi', group: 'ENVIRONMENT', displayName: 'Vegetation (NDVI)', source: 'Sentinel-2 SR', type: 'raster', hasOpacity: true },
-      { id: 'ndwi', group: 'ENVIRONMENT', displayName: 'Surface Water (NDWI)', source: 'Sentinel-2 SR', type: 'raster', hasOpacity: true },
-      { id: 'lulc', group: 'ENVIRONMENT', displayName: 'Land Cover (Dynamic World)', source: 'Dynamic World v1', type: 'raster', hasOpacity: true, hasLegend: true },
-      { id: 'terrain', group: 'ENVIRONMENT', displayName: 'Terrain / Elevation', source: 'SRTM 30m (USGS/NASA)', type: 'raster', hasOpacity: true },
-      { id: 'soil_moisture', group: 'ENVIRONMENT', displayName: 'Soil Moisture (SMAP ~9km)', source: 'NASA SMAP L4', type: 'raster', hasOpacity: true, coarseResolution: true },
-      { id: 'true_color', group: 'BASE', displayName: 'Sentinel-2 True Color', source: 'Sentinel-2 SR', type: 'raster', hasOpacity: true },
-    ]
-  });
-});
-
-// POST /api/watersheds  — create custom watershed
-app.post('/api/watersheds', async (req, res) => {
-  try {
-    const { name, type, geometry, source, metadata } = req.body;
-    if (!name || !geometry) {
-      return wsError(res, 'MISSING_FIELDS', 'name and geometry are required', 400);
-    }
-    if (!['CUSTOM', 'DERIVED', 'IMPORTED'].includes(type)) {
-      return wsError(res, 'INVALID_TYPE', 'type must be CUSTOM, DERIVED, or IMPORTED', 400);
-    }
-    // Basic geometry validation
-    if (!['Polygon', 'MultiPolygon'].includes(geometry.type)) {
-      return wsError(res, 'INVALID_GEOMETRY', 'geometry must be Polygon or MultiPolygon', 400);
-    }
-    const id = `custom-${Date.now()}`;
-    const ws = {
-      id,
-      name,
-      type,
-      geometry,
-      source: source || 'User-defined',
-      metadata: metadata || {},
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-    await insertRow('watersheds', id, ws);
-    wsResponse(res, ws, 201);
-  } catch (err) {
-    wsError(res, 'CREATE_ERROR', err.message);
-  }
-});
-
-// POST /api/watersheds/delineate  — pour-point catchment
-app.post('/api/watersheds/delineate', async (req, res) => {
-  // Pour-point delineation requires HydroSHEDS flow direction dataset
-  // This is marked as PENDING until full implementation
-  wsResponse(res, {
-    status: 'PENDING_BACKEND',
-    message: 'Pour-point delineation requires HydroSHEDS flow direction analysis. Feature is planned.',
-    pourPoint: req.body.pourPoint
-  });
-});
-
-// POST /api/watersheds/import  — import GeoJSON
-app.post('/api/watersheds/import', async (req, res) => {
-  try {
-    const { name, geojson } = req.body;
-    if (!geojson || !geojson.type) {
-      return wsError(res, 'INVALID_GEOJSON', 'geojson object is required', 400);
-    }
-    let geometry = null;
-    if (geojson.type === 'FeatureCollection') {
-      geometry = geojson.features?.[0]?.geometry;
-    } else if (geojson.type === 'Feature') {
-      geometry = geojson.geometry;
-    } else if (['Polygon', 'MultiPolygon'].includes(geojson.type)) {
-      geometry = geojson;
-    }
-    if (!geometry) {
-      return wsError(res, 'NO_GEOMETRY', 'Could not extract Polygon/MultiPolygon geometry', 422);
-    }
-    if (!['Polygon', 'MultiPolygon'].includes(geometry.type)) {
-      return wsError(res, 'UNSUPPORTED_GEOMETRY', `Geometry type ${geometry.type} is not supported`, 422);
-    }
-    const id = `imported-${Date.now()}`;
-    const ws = {
-      id,
-      name: name || 'Imported Watershed',
-      type: 'IMPORTED',
-      geometry,
-      source: 'GeoJSON Import',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-    await insertRow('watersheds', id, ws);
-    wsResponse(res, ws, 201);
-  } catch (err) {
-    wsError(res, 'IMPORT_ERROR', err.message);
-  }
-});
-
-// GET /api/watersheds  — list saved custom watersheds
-app.get('/api/watersheds', async (req, res) => {
-  try {
-    const all = await getAllRows('watersheds');
-    wsResponse(res, all);
-  } catch (err) {
-    wsError(res, 'LIST_ERROR', err.message);
-  }
-});
-
-// GET /api/watersheds/:id  — get saved watershed by ID
-app.get('/api/watersheds/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    // Skip if this is a sub-route handled above
-    if (['resolve', 'search'].includes(id)) return;
-    const ws = await getRow('watersheds', id);
-    if (!ws) return wsError(res, 'NOT_FOUND', 'Watershed not found', 404);
-    wsResponse(res, ws);
-  } catch (err) {
-    wsError(res, 'GET_ERROR', err.message);
-  }
-});
-
-// DELETE /api/watersheds/:id  — delete saved watershed
-app.delete('/api/watersheds/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const changes = await deleteRow('watersheds', id);
-    if (changes === 0) return wsError(res, 'NOT_FOUND', 'Watershed not found', 404);
-    wsResponse(res, { deleted: true });
-  } catch (err) {
-    wsError(res, 'DELETE_ERROR', err.message);
+    res.status(500).json({ ok: false, error: { code: 'GEOCODE_FAILED', message: 'Geocoding failed' } });
   }
 });
 
@@ -1465,6 +1255,147 @@ app.post('/api/evidence-gaps/:id/dismiss', async (req, res) => {
   }
 });
 
+// =========================================================
+// INTERVENTION API
+// =========================================================
+
+// GET /api/interventions — list interventions (optionally filtered by watershed)
+app.get('/api/interventions', async (req, res) => {
+  try {
+    const { watershedId, type, status } = req.query;
+    let interventions = await getAllRows('interventions');
+
+    if (watershedId) {
+      interventions = interventions.filter(i => i.watershedId === watershedId);
+    }
+    if (type) {
+      interventions = interventions.filter(i => i.type === type);
+    }
+    if (status) {
+      interventions = interventions.filter(i => i.status === status);
+    }
+
+    wsResponse(res, interventions);
+  } catch (err) {
+    wsError(res, 'LIST_ERROR', err.message);
+  }
+});
+
+// GET /api/interventions/:id — get single intervention
+app.get('/api/interventions/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const intervention = await getRow('interventions', id);
+    if (!intervention) return wsError(res, 'NOT_FOUND', 'Intervention not found', 404);
+    wsResponse(res, intervention);
+  } catch (err) {
+    wsError(res, 'GET_ERROR', err.message);
+  }
+});
+
+// POST /api/interventions — create intervention
+app.post('/api/interventions', async (req, res) => {
+  try {
+    const { watershedId, type, name, coordinates, geometry, constructionDate, status, notes, photographs, linkedMissionId, linkedObservationId } = req.body;
+
+    if (!watershedId || !type || !name || !coordinates) {
+      return wsError(res, 'MISSING_FIELDS', 'watershedId, type, name, and coordinates are required', 400);
+    }
+
+    const interventionTypes = ['Check Dam', 'Farm Pond', 'Percolation Tank', 'Recharge Structure', 'Contour Trench', 'Bund', 'Plantation', 'Drainage Work', 'Other'];
+    if (!interventionTypes.includes(type)) {
+      return wsError(res, 'INVALID_TYPE', `type must be one of: ${interventionTypes.join(', ')}`, 400);
+    }
+
+    const intervention = {
+      id: `intervention-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      watershedId,
+      type,
+      name,
+      coordinates,
+      geometry: geometry || null,
+      constructionDate: constructionDate || null,
+      status: status || 'PLANNED',
+      notes: notes || '',
+      photographs: photographs || [],
+      inspections: [],
+      linkedMissionId: linkedMissionId || null,
+      linkedObservationId: linkedObservationId || null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    await insertRow('interventions', intervention.id, intervention);
+    wsResponse(res, intervention, 201);
+  } catch (err) {
+    wsError(res, 'CREATE_ERROR', err.message);
+  }
+});
+
+// PATCH /api/interventions/:id — update intervention
+app.patch('/api/interventions/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const existing = await getRow('interventions', id);
+    if (!existing) return wsError(res, 'NOT_FOUND', 'Intervention not found', 404);
+
+    const allowedFields = ['type', 'name', 'coordinates', 'geometry', 'constructionDate', 'status', 'notes', 'photographs', 'linkedMissionId', 'linkedObservationId'];
+    const updates = {};
+    for (const f of allowedFields) {
+      if (req.body[f] !== undefined) updates[f] = req.body[f];
+    }
+
+    const updated = { ...existing, ...updates, updatedAt: new Date().toISOString() };
+    await updateRow('interventions', id, updated);
+    wsResponse(res, updated);
+  } catch (err) {
+    wsError(res, 'UPDATE_ERROR', err.message);
+  }
+});
+
+// POST /api/interventions/:id/inspections — add inspection record
+app.post('/api/interventions/:id/inspections', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { date, status, notes, photos, inspector } = req.body;
+    const existing = await getRow('interventions', id);
+    if (!existing) return wsError(res, 'NOT_FOUND', 'Intervention not found', 404);
+
+    const inspection = {
+      id: `insp-${Date.now()}`,
+      date: date || new Date().toISOString(),
+      status: status || 'COMPLETED',
+      notes: notes || '',
+      photos: photos || [],
+      inspector: inspector || 'FIELD_TEAM'
+    };
+
+    const updated = {
+      ...existing,
+      inspections: [...(existing.inspections || []), inspection],
+      status: status || existing.status,
+      updatedAt: new Date().toISOString()
+    };
+
+    await updateRow('interventions', id, updated);
+    wsResponse(res, updated);
+  } catch (err) {
+    wsError(res, 'INSPECTION_ERROR', err.message);
+  }
+});
+
+// DELETE /api/interventions/:id — delete intervention
+app.delete('/api/interventions/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const changes = await deleteRow('interventions', id);
+    if (changes === 0) return wsError(res, 'NOT_FOUND', 'Intervention not found', 404);
+    wsResponse(res, { deleted: true });
+  } catch (err) {
+    wsError(res, 'DELETE_ERROR', err.message);
+  }
+});
+
 app.post('/api/compare', async (req, res) => {
   try {
     const { baselineDate, currentDate, coords, bounds, indicator } = req.body;
@@ -1579,6 +1510,145 @@ app.post('/api/mission/preview', async (req, res) => {
     res.json({ mission });
   } catch (err) {
     console.error('[Mission] preview error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/missions — list all missions
+app.get('/api/missions', async (req, res) => {
+  try {
+    const { status, watershedId } = req.query;
+    let missions = await getAllRows('missions');
+
+    if (status) {
+      missions = missions.filter(m => m.status === status);
+    }
+    if (watershedId) {
+      missions = missions.filter(m => m.target?.id === watershedId);
+    }
+
+    // Sort by generatedAt descending
+    missions.sort((a, b) => new Date(b.timestamps?.generatedAt || 0) - new Date(a.timestamps?.generatedAt || 0));
+
+    res.json(missions);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/missions/:id — get single mission with stops
+app.get('/api/missions/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const mission = await getRow('missions', id);
+    if (!mission) return res.status(404).json({ error: 'Mission not found' });
+
+    // Fetch mission stops
+    const stops = await getAllRows('mission_stops');
+    mission.stops = stops.filter(s => s.missionId === id).sort((a, b) => a.sequence - b.sequence);
+
+    res.json(mission);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH /api/missions/:id — update mission
+app.patch('/api/missions/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const mission = await getRow('missions', id);
+    if (!mission) return res.status(404).json({ error: 'Mission not found' });
+
+    const allowedFields = ['status', 'name', 'description', 'priority', 'constraints', 'selectedStops', 'notes'];
+    const updates = {};
+    for (const f of allowedFields) {
+      if (req.body[f] !== undefined) updates[f] = req.body[f];
+    }
+
+    const updated = { ...mission, ...updates, updatedAt: new Date().toISOString() };
+    await updateRow('missions', id, updated);
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/missions/:id/stops — get mission stops
+app.get('/api/missions/:id/stops', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const stops = await getAllRows('mission_stops');
+    const missionStops = stops.filter(s => s.missionId === id).sort((a, b) => a.sequence - b.sequence);
+    res.json(missionStops);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/missions/:id/stops — add mission stop
+app.post('/api/missions/:id/stops', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const mission = await getRow('missions', id);
+    if (!mission) return res.status(404).json({ error: 'Mission not found' });
+
+    const { stopId, title, lat, lng, objective, type, priority, linkedInterventionId, linkedObservationId } = req.body;
+
+    const stop = {
+      id: stopId || `stop-${Date.now()}`,
+      missionId: id,
+      sequence: req.body.sequence || 1,
+      title: title || 'New Stop',
+      lat: lat || mission.target?.center?.lat || 0,
+      lng: lng || mission.target?.center?.lng || 0,
+      objective: objective || '',
+      type: type || 'OBSERVATION',
+      priority: priority || 'MEDIUM',
+      status: 'UPCOMING',
+      linkedInterventionId: linkedInterventionId || null,
+      linkedObservationId: linkedObservationId || null,
+      notes: '',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    await insertRow('mission_stops', stop.id, stop);
+    res.status(201).json(stop);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH /api/mission-stops/:id — update mission stop
+app.patch('/api/mission-stops/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const stop = await getRow('mission_stops', id);
+    if (!stop) return res.status(404).json({ error: 'Mission stop not found' });
+
+    const allowedFields = ['title', 'lat', 'lng', 'objective', 'type', 'priority', 'status', 'sequence', 'linkedInterventionId', 'linkedObservationId', 'notes'];
+    const updates = {};
+    for (const f of allowedFields) {
+      if (req.body[f] !== undefined) updates[f] = req.body[f];
+    }
+
+    const updated = { ...stop, ...updates, updatedAt: new Date().toISOString() };
+    await updateRow('mission_stops', id, updated);
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/mission-stops/:id — delete mission stop
+app.delete('/api/mission-stops/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const changes = await deleteRow('mission_stops', id);
+    if (changes === 0) return res.status(404).json({ error: 'Mission stop not found' });
+    res.status(204).send();
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -1831,6 +1901,7 @@ app.delete('/api/:resource/:id', async (req, res) => {
 if (!process.env.VERCEL && !process.env.NETLIFY) {
   const server = app.listen(PORT, () => {
     console.log(`Local authoritative server running on http://localhost:${PORT} with SQLite backend`);
+    ensureSeeds();
   });
 
   server.on('error', (err) => {

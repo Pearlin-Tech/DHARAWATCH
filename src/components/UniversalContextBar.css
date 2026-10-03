@@ -1,0 +1,199 @@
+/* ================================================================
+   DHARAWATCH — Universal Context Bar
+   ================================================================ */
+
+.universal-context-bar {
+  position: fixed;
+  top: 0;
+  left: 72px; /* sidebar width */
+  right: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 16px;
+  height: 40px;
+  background: rgba(9, 11, 15, 0.9);
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 2px 16px rgba(0, 0, 0, 0.4);
+}
+
+.ucb-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.ucb-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Context Chain */
+.ucb-context-chain {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ucb-separator {
+  color: #4b5563;
+  font-size: 14px;
+  font-weight: 300;
+  user-select: none;
+}
+
+.ucb-context-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 8px;
+  border-radius: 6px;
+  border: 1px solid;
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.ucb-context-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.ucb-ctx-label {
+  font-family: monospace;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #6b7280;
+  display: block;
+  line-height: 1;
+}
+
+.ucb-ctx-name {
+  font-family: monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: #f2f3f5;
+  display: block;
+  line-height: 1;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Empty State */
+.ucb-empty {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #6b7280;
+}
+
+.ucb-demo-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-family: monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  color: #f59e0b;
+}
+
+.ucb-demo-btn:hover:not(:disabled) {
+  background: rgba(245, 158, 11, 0.28);
+  color: #fcd34d;
+}
+
+.ucb-demo-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.ucb-demo-btn .spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Demo Badge */
+.ucb-demo-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.2);
+  color: #f59e0b;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* Clear Button */
+.ucb-clear-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #6b7280;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.ucb-clear-btn:hover {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #ef4444;
+}
+
+/* Mobile Responsive */
+@media (max-width: 768px) {
+  .universal-context-bar {
+    left: 0;
+    padding: 4px 10px;
+    height: 36px;
+  }
+  
+  .ucb-ctx-name {
+    max-width: 100px;
+    font-size: 10px;
+  }
+  
+  .ucb-ctx-label {
+    font-size: 7px;
+  }
+  
+  .ucb-demo-btn span {
+    display: none;
+  }
+  
+  .ucb-demo-btn {
+    padding: 6px;
+  }
+}

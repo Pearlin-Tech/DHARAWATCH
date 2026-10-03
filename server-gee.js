@@ -4,9 +4,11 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+dotenv.config({ path: path.join(__dirname, '.env.local') });
 
 // ─── Configuration ───────────────────────────────────────────────
 const CONFIG = {
@@ -128,32 +130,99 @@ export async function initEE() {
 
 // ─── Health Check ────────────────────────────────────────────────
 export async function healthCheck() {
-  const result = {
-    earthEngine: { initialized: eeInitialized, authenticated: false },
-    dataset: { id: CONFIG.COLLECTION_SR, accessible: false },
-    testComputation: false,
-    timestamp: new Date().toISOString()
-  };
+  const hasProject = !!process.env.EARTH_ENGINE_PROJECT_ID;
+  const hasEmail = !!process.env.EARTH_ENGINE_CLIENT_EMAIL;
+  const hasKey = !!process.env.EARTH_ENGINE_PRIVATE_KEY;
 
-  if (!eeInitialized) return result;
-  result.earthEngine.authenticated = true;
-
-  try {
-    // Test dataset access + basic computation
-    const testResult = await new Promise((resolve, reject) => {
-      const col = ee.ImageCollection(CONFIG.COLLECTION_SR).limit(1);
-      col.size().evaluate((size, error) => {
-        if (error) reject(new Error(error));
-        else resolve(size);
-      });
-    });
-    result.dataset.accessible = testResult > 0;
-    result.testComputation = true;
-  } catch (e) {
-    result.dataset.error = e.message;
+  if (!hasProject || !hasEmail || !hasKey) {
+    return {
+      ok: false,
+      earthEngine: { authenticated: false, initialized: false },
+      error: { stage: 'authentication', code: 'MISSING_CREDENTIALS', message: 'Missing EARTH_ENGINE_* env vars' }
+    };
   }
 
-  return result;
+  if (!eeInitialized) {
+    try {
+      const success = await initEE();
+      if (!success) {
+        return {
+          ok: false,
+          earthEngine: { authenticated: false, initialized: false },
+          error: { stage: 'initialization', code: 'INIT_FAILED', message: 'Earth Engine initialization failed' }
+        };
+      }
+    } catch (err) {
+      return {
+        ok: false,
+        earthEngine: { authenticated: false, initialized: false },
+        error: { stage: 'initialization', code: 'INIT_ERROR', message: err.message }
+      };
+    }
+  }
+
+  try {
+    const tests = { hydrosheds: 'PENDING', sentinel2: 'PENDING', mapTileGeneration: 'PENDING' };
+    
+    // C. access to HydroSHEDS
+    await new Promise((resolve, reject) => {
+      const basins = ee.FeatureCollection('WWF/HydroSHEDS/v1/Basins/hybas_7').limit(1);
+      basins.size().evaluate((size, error) => {
+        if (error) reject(new Error('HydroSHEDS access failed: ' + error));
+        else { tests.hydrosheds = 'PASS'; resolve(); }
+      });
+    });
+
+    // D. access to Sentinel-2
+    await new Promise((resolve, reject) => {
+      const s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED').limit(1);
+      s2.size().evaluate((size, error) => {
+        if (error) reject(new Error('Sentinel-2 access failed: ' + error));
+        else { tests.sentinel2 = 'PASS'; resolve(); }
+      });
+    });
+
+    // E. generate a simple map layer
+    await new Promise((resolve, reject) => {
+      const img = ee.Image('USGS/SRTMGL1_003');
+      img.getMap({ min: 0, max: 3000, palette: ['000000', 'ffffff'] }, (mapId, error) => {
+        if (error) reject(new Error('Map tile generation failed: ' + error));
+        else { tests.mapTileGeneration = 'PASS'; resolve(); }
+      });
+    });
+
+    // F. calculate a simple statistic over a small geometry
+    await new Promise((resolve, reject) => {
+      const img = ee.Image('USGS/SRTMGL1_003');
+      const geom = ee.Geometry.Point([72.5714, 23.0225]).buffer(100);
+      const stat = img.reduceRegion({ reducer: ee.Reducer.mean(), geometry: geom, scale: 30 });
+      stat.evaluate((val, error) => {
+        if (error) reject(new Error('Computation failed: ' + error));
+        else resolve();
+      });
+    });
+
+    return {
+      ok: true,
+      earthEngine: {
+        authenticated: true,
+        initialized: true,
+        project: process.env.EARTH_ENGINE_PROJECT_ID
+      },
+      tests
+    };
+
+  } catch (err) {
+    return {
+      ok: false,
+      earthEngine: { authenticated: true, initialized: true },
+      error: {
+        stage: 'testing',
+        code: 'TEST_FAILED',
+        message: err.message
+      }
+    };
+  }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────

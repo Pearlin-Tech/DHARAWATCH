@@ -1,5 +1,15 @@
 import { resolveWatershedByCoord, searchWatersheds, getFieldSatelliteContext } from './watershedService.js';
-import { reverseGeocode } from './fieldService.js';
+// reverseGeocode is not available in fieldService yet, define inline
+async function reverseGeocode(lat, lon) {
+  try {
+    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}`);
+    const data = await res.json();
+    return data?.display_name || null;
+  } catch (err) {
+    console.warn('[Mission] reverseGeocode failed:', err.message);
+    return null;
+  }
+}
 
 export async function searchMissionWatersheds(query) {
   const wss = await searchWatersheds(query);
@@ -153,8 +163,11 @@ export async function generateMissionPlan(targetWatershed, originGeo, constraint
   
   // 1. Fetch satellite intelligence for the watershed area
   // We'll use the watershed centroid for the query
-  const centerLat = targetWatershed.centroid?.lat || targetWatershed.lat || 22.80;
-  const centerLon = targetWatershed.centroid?.lng || targetWatershed.lon || 86.18;
+  const centerLat = targetWatershed.centroid?.lat ?? targetWatershed.lat ?? targetWatershed.center?.[1];
+  const centerLon = targetWatershed.centroid?.lon ?? targetWatershed.centroid?.lng ?? targetWatershed.lon ?? targetWatershed.center?.[0];
+  if (!Number.isFinite(centerLat) || !Number.isFinite(centerLon)) {
+    throw new Error('Mission target has no coordinates — select a watershed/location first (no default location is assumed).');
+  }
   
   // Fetch real EE data
   let satCtx = null;

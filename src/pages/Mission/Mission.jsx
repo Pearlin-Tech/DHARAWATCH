@@ -6,12 +6,20 @@ import {
   ArrowRight, ShieldCheck, Download, Save,
   Play, CheckCircle2, ChevronDown, Layers, MapPin,
   ZoomIn, ZoomOut, Maximize, AlertTriangle, Check,
-  Search, X, Route, Timer, Footprints, Shield
+  Search, X, Route, Timer, Footprints, Shield,
+  Plus, Pen, Trash2, Eye, EyeOff, Flag
 } from 'lucide-react';
 import AppNavigation from '../../components/AppNavigation';
 import { useGlobalContext } from '../../context/GlobalContext';
+import { useAppContext } from '../../components/UniversalContextBar';
 import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
+import { 
+  listMissions, getMission, createMission, updateMission, deleteMission,
+  listMissionStops, createMissionStop, updateMissionStop, deleteMissionStop,
+  MISSION_STATUSES, MISSION_STOP_STATUSES, MISSION_STOP_TYPES,
+  getMissionStatusInfo, getMissionStopStatusInfo, getMissionStopTypeInfo
+} from '../../services/missionClient';
 import './Mission.css';
 // ─── Constants ──────────────────────────────────────────────────────────────
 const WINDOW_OPTIONS = [
@@ -422,6 +430,7 @@ export default function Mission() {
   const { loaded: mapsLoaded, error: mapsError } = useGoogleMaps(googleMapsApiKey);
 
   const navigate = useNavigate();
+  const { setCurrentMission, setCurrentWatershed } = useAppContext();
   const mapContainer = useRef(null);
   const map = useRef(null);
   const markersRef = useRef({});
@@ -442,11 +451,223 @@ export default function Mission() {
   const [missionData, setMissionData] = useState(null);
   const [savingState, setSavingState] = useState('');
 
+  // ─── Sync mission to Universal Context Bar ─────────────────────────
+  useEffect(() => {
+    if (missionData) {
+      setCurrentMission({
+        id: missionData.id,
+        name: missionData.name || missionData.target?.name || 'Mission',
+        status: missionData.status,
+        target: missionData.target,
+        selectedStops: missionData.selectedStops
+      });
+      if (missionData.target) {
+        setCurrentWatershed({
+          id: missionData.target.id,
+          name: missionData.target.name,
+          type: 'MISSION_TARGET'
+        });
+      }
+    }
+  }, [missionData, setCurrentMission, setCurrentWatershed]);
+
   const [candidates, setCandidates] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
   const [activeStopId, setActiveStopId] = useState(null);
 
   const [activeTab, setActiveTab] = useState('candidate_pool');
+
+  // ─── Saved Missions ──────────────────────────────────────────────
+  const [savedMissions, setSavedMissions] = useState([]);
+  const [savedMissionsOpen, setSavedMissionsOpen] = useState(false);
+  const [loadingMissions, setLoadingMissions] = useState(false);
+  const [editingMission, setEditingMission] = useState(null);
+  const [missionFormData, setMissionFormData] = useState({});
+
+  // Load saved missions on mount
+  useEffect(() => {
+    loadSavedMissions();
+  }, []);
+
+  const loadSavedMissions = async () => {
+    setLoadingMissions(true);
+    try {
+      const missions = await listMissions();
+      setSavedMissions(missions || []);
+    } catch (err) {
+      console.error('Failed to load missions:', err);
+    } finally {
+      setLoadingMissions(false);
+    }
+  };
+
+  const handleSaveMission = async () => {
+    if (!missionData) return;
+    setSavingState('saving');
+    try {
+      const missionToSave = {
+        ...missionData,
+        status: 'DRAFT',
+        name: missionFormData.name || missionData.target?.name || 'Mission',
+        description: missionFormData.description || '',
+        priority: missionFormData.priority || 'MEDIUM',
+        selectedStops: selectedIds.map((id, idx) => {
+          const c = candidates.find(x => x.id === id);
+          return c ? { ...c, sequence: idx + 1 } : null;
+        }).filter(Boolean),
+        notes: missionFormData.notes || ''
+      };
+      
+      const saved = await createMission(missionToSave);
+      setSavingState('saved');
+      setTimeout(() => setSavingState(''), 2500);
+      await loadSavedMissions();
+    } catch (err) {
+      setSavingState('error');
+      setTimeout(() => setSavingState(''), 2500);
+      console.error('Save failed:', err);
+    }
+  };
+
+  const handleLoadMission = async (mission) => {
+    try {
+      const fullMission = await getMission(mission.id);
+      if (fullMission.stops && fullMission.stops.length > 0) {
+        // Rebuild candidates from stops
+        const stopsAsCandidates = fullMission.stops.map((s, idx) => ({
+          id: s.id,
+          title: s.title,
+          desc: s.objective,
+          coords: [s.lng, s.lat],
+          reason: s.objective,
+          priority: s.priority,
+          type: s.type,
+          objective: s.objective,
+          score: 100,
+          confidence: 0.9,
+          sequence: s.sequence
+        }));
+        setCandidates(stopsAsCandidates);
+        setSelectedIds(fullMission.stops.map(s => s.id));
+        setActiveStopId(fullMission.stops[0]?.id || null);
+      }
+      setMissionData(fullMission);
+      setMissionFormData({ name: fullMission.name, description: fullMission.description, priority: fullMission.priority, notes: fullMission.notes });
+      setMissionState('READY');
+      setActiveTab('active_plan');
+      
+      if (map.current && fullMission.map?.center) {
+        map.current.panTo({ lat: fullMission.map.center.lat, lng: fullMission.map.center.lng });
+        map.current.setZoom(12);
+      }
+    } catch (err) {
+      console.error('Failed to load mission:', err);
+      alert('Failed to load mission: ' + err.message);
+    }
+  };
+
+  const handleDeleteMission = async (missionId) => {
+    if (!window.confirm('Delete this mission?')) return;
+    try {
+      await deleteMission(missionId);
+      await loadSavedMissions();
+    } catch (err) {
+      alert('Failed to delete: ' + err.message);
+    }
+  };
+
+  // ─── Mission Form Modal ──────────────────────────────────────────
+  const [showMissionForm, setShowMissionForm] = useState(false);
+  const [missionFormMode, setMissionFormMode] = useState('create'); // 'create' | 'edit'
+
+  const MissionFormModal = () => {
+    const [formData, setFormData] = useState({
+      name: missionFormData.name || '',
+      description: missionFormData.description || '',
+      priority: missionFormData.priority || 'MEDIUM',
+      notes: missionFormData.notes || ''
+    });
+
+    const handleSubmit = async (e) => {
+      e.preventDefault();
+      setMissionFormData(formData);
+      setShowMissionForm(false);
+      await handleSaveMission();
+    };
+
+    return (
+      <div className="mission-form-overlay" onClick={() => setShowMissionForm(false)}>
+        <div className="mission-form-modal" onClick={e => e.stopPropagation()}>
+          <div className="mission-form-header">
+            <h4>{missionFormMode === 'create' ? 'SAVE MISSION AS NEW' : 'EDIT MISSION'}</h4>
+            <button className="mission-form-close" onClick={() => setShowMissionForm(false)}><X size={16} /></button>
+          </div>
+          <form onSubmit={handleSubmit} style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div>
+              <label style={{ display: 'block', fontSize: 10, color: '#6b7280', marginBottom: 4 }}>MISSION NAME *</label>
+              <input 
+                value={formData.name} 
+                onChange={e => setFormData(prev => ({ ...prev, name: e.target.value }))} 
+                className="int-form-input" 
+                placeholder="Mission name"
+                required
+              />
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: 10, color: '#6b7280', marginBottom: 4 }}>DESCRIPTION</label>
+              <textarea 
+                value={formData.description} 
+                onChange={e => setFormData(prev => ({ ...prev, description: e.target.value }))} 
+                className="int-form-input" 
+                rows={3}
+                placeholder="Mission description..."
+              />
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: 10, color: '#6b7280', marginBottom: 4 }}>PRIORITY</label>
+              <select 
+                value={formData.priority} 
+                onChange={e => setFormData(prev => ({ ...prev, priority: e.target.value }))} 
+                className="int-form-input"
+              >
+                <option value="LOW">Low</option>
+                <option value="MEDIUM">Medium</option>
+                <option value="HIGH">High</option>
+                <option value="CRITICAL">Critical</option>
+              </select>
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: 10, color: '#6b7280', marginBottom: 4 }}>NOTES</label>
+              <textarea 
+                value={formData.notes} 
+                onChange={e => setFormData(prev => ({ ...prev, notes: e.target.value }))} 
+                className="int-form-input" 
+                rows={3}
+                placeholder="Additional notes..."
+              />
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }}>
+              <button type="button" className="int-form-btn secondary" onClick={() => setShowMissionForm(false)}>CANCEL</button>
+              <button type="submit" className="int-form-btn primary" disabled={!formData.name}>
+                {missionFormMode === 'create' ? 'SAVE MISSION' : 'UPDATE MISSION'}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  };
+
+  const handleStartMission = async () => {
+    if (!missionData) return;
+    setMissionState('ACTIVE');
+    try {
+      await updateMission(missionData.id, { 
+        status: 'IN_PROGRESS', 
+        startedAt: new Date().toISOString() 
+      });
+    } catch { }
+  };
 
   // Initialize Map
   useEffect(() => {
@@ -991,7 +1212,7 @@ export default function Mission() {
                 </div>
                 {/* Actions */}
                 {(missionState === 'READY' || missionState === 'ACTIVE' || missionState === 'CANDIDATES') && (
-                  <div style={{ display: 'flex', gap: 8 }}>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     <button
                       className="mbs-btn"
                       onClick={() => exportGPX(missionData, candidates, selectedIds)}
@@ -999,14 +1220,59 @@ export default function Mission() {
                     >
                       <Download size={13} /> Export GPX
                     </button>
-                    <button
-                      className="mbs-btn"
-                      onClick={handleSave}
-                      disabled={savingState === 'saving'}
-                    >
-                      <Save size={13} />
-                      {savingState === 'saving' ? 'Saving...' : savingState === 'saved' ? 'Saved ✓' : savingState === 'error' ? 'Error' : 'Save Draft'}
-                    </button>
+                    
+                    {/* Saved Missions Dropdown */}
+                    <div style={{ position: 'relative' }}>
+                      <button className="mbs-btn" onClick={() => setSavedMissionsOpen(!savedMissionsOpen)}>
+                        <Save size={13} /> MISSIONS ({savedMissions.length})
+                      </button>
+                      {savedMissionsOpen && (
+                        <div className="mbs-dropdown" style={{ 
+                          position: 'absolute', bottom: '100%', right: 0, marginBottom: 8,
+                          minWidth: 320, maxHeight: 300, overflowY: 'auto',
+                          background: 'rgba(9,11,15,0.97)', backdropFilter: 'blur(20px)',
+                          border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8,
+                          boxShadow: '0 8px 32px rgba(0,0,0,0.6)', zIndex: 1000
+                        }}>
+                          {loadingMissions && <div style={{ padding: 12, textAlign: 'center', color: '#6b7280', fontFamily: 'monospace', fontSize: 11 }}>Loading…</div>}
+                          {!loadingMissions && savedMissions.length === 0 && <div style={{ padding: 12, color: '#6b7280', fontFamily: 'monospace', fontSize: 11 }}>No saved missions</div>}
+                          {!loadingMissions && savedMissions.map(m => (
+                            <div key={m.id} style={{ padding: '10px 12px', borderBottom: '1px solid rgba(255,255,255,0.05)', cursor: 'pointer' }}
+                              onClick={() => { handleLoadMission(m); setSavedMissionsOpen(false); }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontWeight: 600, fontSize: 12, color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                  {m.name || m.target?.name || 'Unnamed Mission'}
+                                </div>
+                                <div style={{ fontSize: 10, color: '#6b7280', marginTop: 2 }}>
+                                  {m.target?.name} · {m.selectedStops?.length || 0} stops · {m.route?.driveDistance || '—'}
+                                </div>
+                                <div style={{ fontSize: 9, color: '#4b5563', marginTop: 2, fontFamily: 'monospace' }}>
+                                  {m.timestamps?.generatedAt ? new Date(m.timestamps.generatedAt).toLocaleDateString() : ''} · {m.status}
+                                </div>
+                              </div>
+                              <button 
+                                onClick={(e) => { e.stopPropagation(); handleDeleteMission(m.id); }} 
+                                style={{ color: '#6b7280', marginLeft: 8 }}
+                              >
+                                <Trash2 size={10} />
+                              </button>
+                            </div>
+                          </div>
+                          ))}
+                          <div style={{ padding: '8px 12px', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                            <button 
+                              className="mbs-btn" 
+                              style={{ width: '100%', justifyContent: 'center' }}
+                              onClick={() => { setMissionFormData({ name: '', description: '', priority: 'MEDIUM', notes: '' }); setMissionFormMode('create'); setShowMissionForm(true); setSavedMissionsOpen(false); }}
+                            >
+                              <Plus size={12} /> SAVE CURRENT AS NEW
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    
                     {missionState === 'CANDIDATES' && (
                       <button className="mbs-btn primary" onClick={handleBuildRoute} disabled={selectedIds.length === 0}>
                         <Route size={13} /> BUILD ROUTE
@@ -1124,6 +1390,8 @@ export default function Mission() {
           )}
         </div>
       </div>
+      
+      {showMissionForm && <MissionFormModal />}
     </div>
   );
 }

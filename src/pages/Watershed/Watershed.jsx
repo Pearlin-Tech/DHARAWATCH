@@ -4,31 +4,39 @@ import maplibregl from '../../lib/maplibre';
 import FloatingPanel from '../../components/FloatingPanel';
 import AppNavigation from '../../components/AppNavigation';
 import {
-  resolveWatershed, searchWatersheds, listSavedWatersheds,
+  resolvePoint, intersectGeometry,
+  resolveWatershed, searchWatersheds, searchPlaces, listSavedWatersheds,
   getFingerprint, getAttention, getTimeline,
-  getAvailableLayers, getLayerTile,
+  getAvailableLayers, getLayerTile, getContextById,
   saveCustomWatershed, importWatershed, deleteWatershed
 } from '../../services/watershedClient';
+
+
+import {
+  listInterventions, createIntervention, updateIntervention, addInspection, deleteIntervention,
+  INTERVENTION_TYPES, INTERVENTION_STATUSES, getInterventionTypeInfo, getInterventionStatusInfo
+} from '../../services/interventionClient';
 import {
   Search, Layers, Activity, AlertTriangle, Clock, Target,
   ArrowRight, Plus, Download, Trash2, Eye, EyeOff,
   ZoomIn, ZoomOut, Maximize, MapPin, ChevronDown, ChevronRight,
   Upload, Pen, Crosshair, X, Check, RefreshCw, Play, Pause,
-  SkipBack, SkipForward, Info, ExternalLink, Navigation
+  SkipBack, SkipForward, Info, ExternalLink, Navigation,
+  Hammer, Wrench, FilePlus, Camera, MapPin as MapPinIcon, Calendar
 } from 'lucide-react';
 import './Watershed.css';
+import { WATERSHED_LAYERS } from '../../shared/layerRegistry.js';
 
-// ─── LAYER REGISTRY (client-side display metadata) ───────────────
-const LAYER_REGISTRY = {
-  boundary:     { group: 'WATERSHED',    color: '#38bdf8', displayName: 'Watershed Boundary', type: 'vector' },
-  drainage:     { group: 'WATERSHED',    color: '#6366f1', displayName: 'Drainage Network',    type: 'vector' },
-  ndvi:         { group: 'ENVIRONMENT',  color: '#10b981', displayName: 'Vegetation (NDVI)',   type: 'raster', hasOpacity: true },
-  ndwi:         { group: 'ENVIRONMENT',  color: '#3b82f6', displayName: 'Surface Water (NDWI)',type: 'raster', hasOpacity: true },
-  lulc:         { group: 'ENVIRONMENT',  color: '#f59e0b', displayName: 'Land Cover (DW)',     type: 'raster', hasOpacity: true, hasLegend: true },
-  terrain:      { group: 'ENVIRONMENT',  color: '#d97706', displayName: 'Terrain / Elevation', type: 'raster', hasOpacity: true },
-  soil_moisture:{ group: 'ENVIRONMENT',  color: '#8b5cf6', displayName: 'Soil Moisture (SMAP ~9km)', type: 'raster', hasOpacity: true, coarse: true },
-  true_color:   { group: 'BASE',         color: '#9ca3af', displayName: 'Sentinel-2 True Color', type: 'raster', hasOpacity: true },
-};
+// Helper to add timeout to any promise
+function withTimeout(promise, ms, timeoutMsg) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(timeoutMsg || "Request timeout")), ms))
+  ]);
+}
+
+
+
 
 const LULC_LEGEND = [
   { label: 'Water',       color: '#419BDF' },
@@ -44,14 +52,105 @@ const LULC_LEGEND = [
 
 // ─── DEFAULT PANEL LAYOUT ─────────────────────────────────────────
 const DEFAULT_PANELS = {
-  fingerprint:   { open: true, pinned: false, zIndex: 10, defaultPosition: { x: 24, y: 80 },  defaultSize: { width: 300, height: 'auto' } },
-  attention:     { open: true, pinned: false, zIndex: 10, defaultPosition: { x: 'calc(100% - 340px)', y: 80 },  defaultSize: { width: 316, height: 'auto' } },
-  layers:        { open: true, pinned: false, zIndex: 10, defaultPosition: { x: 24, y: 440 }, defaultSize: { width: 280, height: 'auto' } },
-  intervention:  { open: true, pinned: false, zIndex: 10, defaultPosition: { x: 'calc(100% - 340px)', y: 340 }, defaultSize: { width: 316, height: 'auto' } },
-  timeline:      { open: true, pinned: false, zIndex: 10, defaultPosition: { x: '50%', y: 'calc(100% - 240px)' }, defaultSize: { width: 700, height: 140 } },
+  fingerprint:   { open: true, pinned: false, zIndex: 30, defaultPosition: { x: 24, y: 80 },  defaultSize: { width: 300, height: 'auto' } },
+  attention:     { open: true, pinned: false, zIndex: 30, defaultPosition: { x: 'calc(100% - 340px)', y: 80 },  defaultSize: { width: 316, height: 'auto' } },
+  layers:        { open: true, pinned: false, zIndex: 30, defaultPosition: { x: 24, y: 440 }, defaultSize: { width: 280, height: 'auto' } },
+  intervention:  { open: true, pinned: false, zIndex: 30, defaultPosition: { x: 'calc(100% - 340px)', y: 340 }, defaultSize: { width: 316, height: 'auto' } },
+  timeline:      { open: true, pinned: false, zIndex: 30, defaultPosition: { x: '50%', y: 'calc(100% - 240px)' }, defaultSize: { width: 700, height: 140 } },
 };
 
+// ─── DEMO WATERSHED PRESETS ─────────────────────────────────────────
+// IDs match the seeded HydroSHEDS records in the database.
+const DEMO_WATERSHEDS = [
+  {
+    id: 'hybas-4050031610',
+    name: 'Sardar Sarovar / Narmada',
+    type: 'watershed',
+    source: 'hydrosheds',
+    lat: 21.8315,
+    lon: 73.7485,
+    areaKm2: 96271,
+    centroid: { lat: 22.44, lon: 77.46 },
+    river: 'Narmada',
+    description: 'Major dam and reservoir on the Narmada River. Prime demonstration watershed with rich satellite history and field evidence.'
+  },
+  {
+    id: 'hybas-4060026820',
+    name: 'Subarnarekha Basin',
+    type: 'watershed',
+    source: 'hydrosheds',
+    lat: 22.5,
+    lon: 86.0,
+    areaKm2: 19476,
+    centroid: { lat: 22.5, lon: 86.0 },
+    river: 'Subarnarekha',
+    description: 'East-flowing river basin spanning Jharkhand, West Bengal, Odisha. Good for multi-state watershed analysis.'
+  },
+  {
+    id: 'hybas-4071011740',
+    name: 'Bhadar Basin',
+    type: 'watershed',
+    source: 'hydrosheds',
+    lat: 21.8,
+    lon: 70.0,
+    areaKm2: 3730,
+    centroid: { lat: 21.8, lon: 70.0 },
+    river: 'Bhadar',
+    description: 'Saurashtra region basin with check dams and irrigation infrastructure. Ideal for intervention tracking.'
+  },
+  {
+    id: 'hybas-4040027780',
+    name: 'Godavari Basin',
+    type: 'watershed',
+    source: 'hydrosheds',
+    lat: 18.5,
+    lon: 79.5,
+    areaKm2: 311061,
+    centroid: { lat: 18.5, lon: 79.5 },
+    river: 'Godavari',
+    description: 'The Godavari is the second largest river in India. Important for agricultural water security in peninsular India.'
+  },
+  {
+    id: 'hybas-4040027100',
+    name: 'Mahanadi Basin',
+    type: 'watershed',
+    source: 'hydrosheds',
+    lat: 20.4,
+    lon: 82.7,
+    areaKm2: 135796,
+    centroid: { lat: 20.4, lon: 82.7 },
+    river: 'Mahanadi',
+    description: 'Key river basin in eastern India spanning Chhattisgarh and Odisha. Rich in hydropower and agriculture.'
+  },
+  {
+    id: 'hybas-6030007000',
+    name: 'Amazon Basin',
+    type: 'watershed',
+    source: 'hydrosheds',
+    lat: -3.4653,
+    lon: -62.2159,
+    areaKm2: 5926323,
+    centroid: { lat: -3.47, lon: -62.22 },
+    river: 'Amazon',
+    description: 'World\'s largest drainage basin. Demonstrates global-scale watershed analysis capabilities.'
+  },
+  {
+    id: 'hybas-1030020040',
+    name: 'Congo Basin',
+    type: 'watershed',
+    source: 'hydrosheds',
+    lat: -4.32,
+    lon: 23.65,
+    areaKm2: 3713646,
+    centroid: { lat: -4.32, lon: 23.65 },
+    river: 'Congo',
+    description: 'The world\'s second largest river basin by discharge. Covers equatorial Africa with dense tropical forest cover.'
+  }
+];
+
+
 import { useGlobalContext } from '../../context/GlobalContext';
+import { useAppContext } from '../../components/UniversalContextBar';
 
 export default function Watershed() {
   const navigate = useNavigate();
@@ -63,6 +162,7 @@ export default function Watershed() {
   const layerMapRef = useRef({}); // maplibre layer IDs keyed by layerId
 
   const { selectedFeature, setSelectedFeature, activeLayers, setActiveLayers } = useGlobalContext();
+  const { setCurrentWatershed, setCurrentMission, setCurrentObservation, clearContext } = useAppContext();
 
   // ─── Watershed Context (single source of truth for the basin) ───────────────
   const [wsCtx, setWsCtx] = useState(null);
@@ -78,9 +178,16 @@ export default function Watershed() {
   const [tlStatus, setTlStatus] = useState('IDLE');
   const [availableLayers, setAvailableLayers] = useState([]);
 
+  // ─── Interventions ────────────────────────────────────────────
+  const [interventions, setInterventions] = useState([]);
+  const [intStatus, setIntStatus] = useState('IDLE');
+  const [intCreating, setIntCreating] = useState(false);
+  const [intEditing, setIntEditing] = useState(null);
+  const [intFormData, setIntFormData] = useState({});
+
   // ─── Panel visibility & z-index ───────────────────────────────
   const [panels, setPanels] = useState(DEFAULT_PANELS);
-  const [maxZ, setMaxZ] = useState(10);
+  const [maxZ, setMaxZ] = useState(30);
 
   // ─── Map layer state (holds tile URLs and opacity) ────────────
   const [layerState, setLayerState] = useState({});     // { layerId: { opacity, tileUrl, status } }
@@ -98,14 +205,116 @@ export default function Watershed() {
   const popupRef = useRef(null);
 
   // ─── Custom watershed builder ─────────────────────────────────
-  const [builderMode, setBuilderMode] = useState(null); // null | 'draw' | 'import' | 'pour'
+  const [builderMode, setBuilderMode] = useState(null); // null | 'draw' | 'draw_done' | 'import' | 'pour'
   const [drawPolygon, setDrawPolygon] = useState(null);
+  const [drawAnalysis, setDrawAnalysis] = useState(null); // { area, candidates, drawn }
+  const [drawAnalyzing, setDrawAnalyzing] = useState(false);
   const [importText, setImportText] = useState('');
   const [importError, setImportError] = useState('');
   const [saveNameInput, setSaveNameInput] = useState('');
   const [savingWs, setSavingWs] = useState(false);
 
+  function computeBBoxFromGeom(geom) {
+    try {
+      const ring = geom.type === 'Polygon' ? geom.coordinates[0] : geom.coordinates[0][0];
+      const lons = ring.map(c => c[0]);
+      const lats = ring.map(c => c[1]);
+      return [
+        [Math.min(...lons), Math.min(...lats)],
+        [Math.max(...lons), Math.max(...lats)]
+      ];
+    } catch (_) { return null; }
+  }
+
+  const selectWatershed = useCallback((watershed) => {
+    setSearchOpen(false);
+    setSearchQuery('');
+    setSavedOpen(false);
+    setDemoOpen(false);
+    setClickPopup(null);
+    setBuilderMode(null);
+    
+    // Clear all panel data when switching basins
+    setFingerprint(null); setFpStatus('IDLE');
+    setAttention(null); setAttStatus('IDLE');
+    setTimeline(null); setTlStatus('IDLE');
+    setAvailableLayers([]);
+    setInterventions([]); setIntStatus('IDLE');
+    setActiveLayers({});
+    setLayerState({});
+    
+    const ctx = { ...watershed, dataStatus: watershed.dataStatus || 'AVAILABLE' };
+
+    // Normalize centroid: DB records use center:[lon,lat], we need centroid:{lon,lat}
+    if (!ctx.centroid && Array.isArray(ctx.center) && ctx.center.length === 2) {
+      ctx.centroid = { lon: ctx.center[0], lat: ctx.center[1] };
+    }
+    // Also derive from bbox if still missing
+    if (!ctx.centroid && Array.isArray(ctx.bbox) && ctx.bbox.length === 4) {
+      ctx.centroid = { lon: (ctx.bbox[0] + ctx.bbox[2]) / 2, lat: (ctx.bbox[1] + ctx.bbox[3]) / 2 };
+    }
+    // Also derive from geometry if available
+    if (!ctx.centroid && ctx.geometry) {
+      try {
+        const ring = ctx.geometry.type === 'Polygon' ? ctx.geometry.coordinates[0] : ctx.geometry.coordinates[0][0];
+        const lons = ring.map(c => c[0]);
+        const lats = ring.map(c => c[1]);
+        ctx.centroid = {
+          lon: lons.reduce((a, b) => a + b, 0) / lons.length,
+          lat: lats.reduce((a, b) => a + b, 0) / lats.length
+        };
+      } catch (_) {}
+    }
+    
+    setWsCtx(ctx);
+    
+    if (ctx.id) {
+      const newUrl = new URL(window.location);
+      newUrl.searchParams.set('id', ctx.id);
+      window.history.pushState({}, '', newUrl);
+    }
+  }, []);
+
+  // ─── Demo watershed loading ───────────────────────────────────
+  const [demoOpen, setDemoOpen] = useState(false);
+  const [demoLoading, setDemoLoading] = useState(null);
+
+  const loadDemoWatershed = useCallback(async (demo) => {
+    setDemoLoading(demo.id);
+    setDemoOpen(false);
+    try {
+      // Always load from the real backend so we get authentic geometry + analytics
+      const ws = await getContextById(demo.id);
+      if (ws) {
+        selectWatershed({ ...ws, dataStatus: 'AVAILABLE' });
+      } else {
+        // Backend didn't return a watershed — use demo metadata with centroid-only context
+        selectWatershed({ ...demo, dataStatus: 'AVAILABLE' });
+      }
+
+      // Fly to demo centroid (fast, no waiting for geometry to load)
+      if (map.current && demo.centroid) {
+        map.current.flyTo({
+          center: [demo.centroid.lon, demo.centroid.lat],
+          zoom: demo.areaKm2 > 1000000 ? 5 : demo.areaKm2 > 50000 ? 7 : 9,
+          duration: 2000
+        });
+      }
+    } catch (err) {
+      console.error('Demo load failed:', err);
+      // Still show something using demo metadata
+      selectWatershed({ ...demo, dataStatus: 'AVAILABLE' });
+      if (map.current && demo.centroid) {
+        map.current.flyTo({ center: [demo.centroid.lon, demo.centroid.lat], zoom: 9, duration: 2000 });
+      }
+    } finally {
+      setDemoLoading(null);
+    }
+  }, []);
+
   // ─── Timeline controls ────────────────────────────────────────
+
+
   const [tlSelectedIdx, setTlSelectedIdx] = useState(null);
   const [tlPlaying, setTlPlaying] = useState(false);
   const tlPlayRef = useRef(null);
@@ -130,7 +339,8 @@ export default function Watershed() {
       },
       center: [0, 20],
       zoom: 2,
-      attributionControl: false
+      attributionControl: false,
+      doubleClickZoom: false
     });
 
     map.current.on('load', () => {
@@ -175,10 +385,15 @@ export default function Watershed() {
     });
 
     map.current.on('click', (e) => {
-      if (builderMode === 'draw') return; // drawing mode handles its own clicks
+      // Drawing mode handles its own clicks below in a separate useEffect.
+      // Normal single click should do nothing significant here.
+    });
+
+    map.current.on('dblclick', (e) => {
+      if (builderMode === 'draw') return;
       const { lngLat } = e;
       const pt = map.current.project(lngLat);
-      setClickPopup({ lat: lngLat.lat, lon: lngLat.lng, x: pt.x, y: pt.y });
+      setClickPopup({ type: 'context-menu', lat: lngLat.lat, lon: lngLat.lng, x: pt.x, y: pt.y });
     });
 
     return () => {
@@ -186,37 +401,7 @@ export default function Watershed() {
     };
   }, []);
 
-  // ─── Global Feature Synchronization ────────────────────────
-  useEffect(() => {
-    if (!selectedFeature) return;
 
-    // We only load the watershed if it doesn't match the selectedFeature's watershed, or if we don't have one yet.
-    // If selectedFeature has a watershedName, use it, else use its name.
-    const searchName = selectedFeature.watershedName || selectedFeature.name;
-
-    setWsLoading(true);
-    searchWatersheds(searchName)
-      .then(results => {
-        if (results && results.length > 0) {
-          setWsCtx(results[0]);
-          
-          if (map.current) {
-            // "use a close regional zoom, NOT India/world view." (zoom approx 13-15)
-            const targetLon = selectedFeature.longitude || results[0].centroid?.lon;
-            const targetLat = selectedFeature.latitude || results[0].centroid?.lat;
-            if (targetLon && targetLat) {
-              map.current.flyTo({ 
-                center: [targetLon, targetLat], 
-                zoom: selectedFeature.latitude ? 13 : 9, 
-                duration: 2000 
-              });
-            }
-          }
-        }
-      })
-      .catch(err => console.error('Failed to load global context:', err))
-      .finally(() => setWsLoading(false));
-  }, [selectedFeature?.id]);
 
   // Close popup on map move
   useEffect(() => {
@@ -227,14 +412,51 @@ export default function Watershed() {
     return () => m.off('movestart', close);
   }, []);
 
-  // ─── Load saved watersheds ─────────────────────────────────────
+  // ─── URL SUPPORT ──────────────────────────────────────────────
   useEffect(() => {
-    listSavedWatersheds().then(setSavedWatersheds).catch(() => {});
-  }, []);
+    const params = new URLSearchParams(location.search);
+    const id = params.get('id');
+    
+    listSavedWatersheds().then(async saved => {
+      setSavedWatersheds(saved);
+      if (!id) return;
+
+      // 1. Check in-memory saved list
+      const existing = saved.find(w => w.id === id);
+      if (existing) { selectWatershed(existing); return; }
+
+      // 2. Check DEMO_WATERSHEDS list (fast path — no network needed)
+      const demo = DEMO_WATERSHEDS.find(d => d.id === id);
+      if (demo) { loadDemoWatershed(demo); return; }
+
+      // 3. Fetch from backend — handles any HydroSHEDS ID or custom area
+      try {
+        setWsLoading(true);
+        const ws = await getContextById(id);
+        if (ws) selectWatershed({ ...ws, dataStatus: 'AVAILABLE' });
+        else setWsError(`Watershed "${id}" not found.`);
+      } catch (err) {
+        setWsError(err.message || `Could not load watershed "${id}".`);
+      } finally {
+        setWsLoading(false);
+      }
+    }).catch(() => {});
+  }, [location.search, selectWatershed, loadDemoWatershed]);
+
+  // ─── Load saved watersheds ─────────────────────────────────────
 
   // ─── When WS context is set, load panel data progressively ────
   useEffect(() => {
     if (!wsCtx || wsCtx.dataStatus === 'UNAVAILABLE') return;
+
+    // Clean up old EE layers to prevent stale imagery
+    if (map.current) {
+      const layersToRemove = Object.keys(WATERSHED_LAYERS).map(id => `ee-layer-${id}`);
+      layersToRemove.forEach(layerId => {
+        if (map.current.getLayer(layerId)) map.current.removeLayer(layerId);
+        if (map.current.getSource(layerId)) map.current.removeSource(layerId);
+      });
+    }
 
     // Update boundary on map
     if (wsCtx.geometry && map.current?.getSource('ws-boundary')) {
@@ -242,14 +464,14 @@ export default function Watershed() {
         type: 'Feature',
         geometry: wsCtx.geometry
       });
-      // Fly to boundary centroid or selected feature
-      const targetLon = selectedFeature?.longitude || wsCtx.centroid?.lon;
-      const targetLat = selectedFeature?.latitude || wsCtx.centroid?.lat;
-      
-      if (targetLon && targetLat) {
+      // Fit to boundary if possible
+      const bounds = computeBBoxFromGeom(wsCtx.geometry);
+      if (bounds) {
+        map.current.fitBounds(bounds, { padding: 100, duration: 1500 });
+      } else if (wsCtx.centroid?.lon && wsCtx.centroid?.lat) {
         map.current.flyTo({
-          center: [targetLon, targetLat],
-          zoom: selectedFeature?.latitude ? 13 : (wsCtx.areaKm2 > 5000 ? 7 : wsCtx.areaKm2 > 500 ? 9 : 11),
+          center: [wsCtx.centroid.lon, wsCtx.centroid.lat],
+          zoom: wsCtx.areaKm2 > 5000 ? 7 : wsCtx.areaKm2 > 500 ? 9 : 11,
           duration: 1500
         });
       }
@@ -260,22 +482,36 @@ export default function Watershed() {
     abortRef.current = new AbortController();
     const { signal } = abortRef.current;
 
+    // Helper to add timeout to any promise
+    const withTimeout = (promise, ms, timeoutMsg) => {
+      return Promise.race([
+        promise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error(timeoutMsg || 'Request timeout')), ms))
+      ]);
+    };
+
     // Load fingerprint
     setFpStatus('LOADING');
-    getFingerprint(wsCtx.id, wsCtx.geometry, signal)
-      .then(fp => { setFingerprint(fp); setFpStatus('AVAILABLE'); })
+    withTimeout(getFingerprint(wsCtx.id, wsCtx.geometry, signal), 30000, 'Fingerprint timeout')
+      .then(fp => { setFingerprint(fp); setFpStatus(fp?.status === 'NO_IMAGERY' ? 'NO DATA' : 'AVAILABLE'); })
       .catch(e => { if (e.name !== 'AbortError') setFpStatus('ERROR'); });
 
     // Load attention
     setAttStatus('LOADING');
-    getAttention(wsCtx.id, wsCtx.geometry, signal)
-      .then(att => { setAttention(att); setAttStatus(att?.dataStatus || 'AVAILABLE'); })
+    withTimeout(getAttention(wsCtx.id, wsCtx.geometry, signal), 30000, 'Attention timeout')
+      .then(att => { 
+        setAttention(att); 
+        setAttStatus(att?.status === 'INSUFFICIENT_DATA' ? 'INSUFFICIENT DATA' : (att?.status === 'NO_ATTENTION_ITEMS' ? 'NO DATA' : (att?.dataStatus || 'AVAILABLE'))); 
+      })
       .catch(e => { if (e.name !== 'AbortError') setAttStatus('ERROR'); });
 
     // Load timeline
     setTlStatus('LOADING');
-    getTimeline(wsCtx.id, wsCtx.geometry, signal)
-      .then(tl => { setTimeline(tl); setTlStatus(tl?.dataStatus || 'AVAILABLE'); })
+    withTimeout(getTimeline(wsCtx.id, wsCtx.geometry, signal), 60000, 'Timeline timeout')
+      .then(tl => { 
+        setTimeline(tl); 
+        setTlStatus(tl?.status === 'NO_IMAGERY' ? 'NO DATA' : (tl?.dataStatus || 'AVAILABLE')); 
+      })
       .catch(e => { if (e.name !== 'AbortError') setTlStatus('ERROR'); });
 
     // Load available layers
@@ -283,24 +519,75 @@ export default function Watershed() {
       .then(data => { setAvailableLayers(data?.available || []); })
       .catch(() => {});
 
+    // Load interventions
+    setIntStatus('LOADING');
+    withTimeout(listInterventions({ watershedId: wsCtx.id }, signal), 15000, 'Interventions timeout')
+      .then(ints => { setInterventions(ints || []); setIntStatus(ints && ints.length > 0 ? 'AVAILABLE' : 'NO DATA'); })
+      .catch(e => { if (e.name !== 'AbortError') setIntStatus('ERROR'); });
+
     return () => { abortRef.current?.abort(); };
   }, [wsCtx?.id]);
 
-  // ─── Resolve on map click ─────────────────────────────────────
+  // ─── Sync watershed to Universal Context Bar ──────────────────
+  useEffect(() => {
+    if (wsCtx && wsCtx.dataStatus === 'AVAILABLE') {
+      setCurrentWatershed({
+        id: wsCtx.id,
+        name: wsCtx.name,
+        type: wsCtx.type,
+        areaKm2: wsCtx.areaKm2,
+        centroid: wsCtx.centroid
+      });
+    } else if (!wsCtx || wsCtx.dataStatus === 'UNAVAILABLE') {
+      // Don't clear context on UNAVAILABLE - keep the last known watershed
+      // clearContext() is called explicitly when needed
+    }
+  }, [wsCtx?.id, wsCtx?.dataStatus, setCurrentWatershed]);
+
+  // ─── Resolve on map click / coordinate ───────────────────────
   const handleResolve = useCallback(async (lat, lon) => {
     setClickPopup(null);
     setWsLoading(true);
     setWsError(null);
     setWsCtx(null);
-    setFingerprint(null);
-    setAttention(null);
-    setTimeline(null);
+    setFingerprint(null); setFpStatus('IDLE');
+    setAttention(null); setAttStatus('IDLE');
+    setTimeline(null); setTlStatus('IDLE');
+    setAvailableLayers([]);
     setActiveLayers({});
+
+    // Fly to the clicked location immediately so the user sees something
+    if (map.current) {
+      map.current.flyTo({ center: [lon, lat], zoom: 9, duration: 1000 });
+    }
+
     try {
-      const ctx = await resolveWatershed(lat, lon);
-      setWsCtx(ctx);
+      const resp = await resolvePoint(lat, lon);
+      const candidates = resp?.candidates || [];
+      if (candidates.length === 0) {
+        setWsError(`No HydroSHEDS watershed found at (${lat.toFixed(4)}, ${lon.toFixed(4)}). This may be ocean or an unmapped region.`);
+        return;
+      }
+      if (candidates.length === 1) {
+        // Auto-select the single result
+        const ws = await getContextById(candidates[0].id);
+        if (ws) selectWatershed({ ...ws, dataStatus: 'AVAILABLE' });
+        return;
+      }
+      // Multiple candidates at different levels → show the most specific one (highest level)
+      // but also store all candidates for the UI to display as choices
+      const best = candidates[candidates.length - 1];
+      const ws = await getContextById(best.id);
+      if (ws) {
+        // Store all candidates on the context for the watershed chooser panel
+        selectWatershed({ ...ws, dataStatus: 'AVAILABLE', candidates });
+      }
     } catch (err) {
-      setWsError(err.message);
+      if (err.code === 'NO_WATERSHED_FOUND') {
+        setWsError(`No watershed found at (${lat.toFixed(4)}, ${lon.toFixed(4)}).`);
+      } else if (err.name !== 'AbortError') {
+        setWsError(err.message);
+      }
     } finally {
       setWsLoading(false);
     }
@@ -313,7 +600,7 @@ export default function Watershed() {
     clearTimeout(searchDebounceRef.current);
     searchDebounceRef.current = setTimeout(async () => {
       try {
-        const results = await searchWatersheds(searchQuery);
+        const results = await searchPlaces(searchQuery);
         setSearchResults(results || []);
       } catch (_) {}
     }, 400);
@@ -323,11 +610,37 @@ export default function Watershed() {
     setSearchOpen(false);
     setSearchQuery('');
     setSearchResults([]);
-    setWsCtx(r);
-    if (r.centroid) {
-      map.current?.flyTo({ center: [r.centroid.lon, r.centroid.lat], zoom: 9, duration: 1500 });
+
+    // If the search result is a saved WATERSHED context from our DB, load it directly
+    if (r.contextId && r.source === 'saved') {
+      loadDemoWatershed({ id: r.contextId, centroid: r.center ? { lon: r.center[0], lat: r.center[1] } : null, areaKm2: r.areaKm2 || 10000 });
+      return;
     }
+
+    // For any result with real coordinates, resolve the watershed at that point.
+    // We ALWAYS use real coordinates — never substitute a demo.
+    const lat = r.lat ?? r.latitude ?? r.centroid?.lat;
+    const lon = r.lon ?? r.longitude ?? r.centroid?.lon;
+
+    if (lat != null && lon != null && Math.abs(lat) <= 90 && Math.abs(lon) <= 180) {
+      // Move map to the selected location first
+      if (map.current) {
+        map.current.flyTo({ center: [lon, lat], zoom: 8, duration: 1200 });
+      }
+      handleResolve(lat, lon);
+      return;
+    }
+
+    // If result has geometry directly (e.g. saved watershed), use it
+    if (r.geometry) {
+      selectWatershed(r);
+      return;
+    }
+
+    // Cannot resolve — show an error
+    setWsError(`Could not determine location for "${r.name}". No coordinates available.`);
   };
+
 
   // ─── Panel management ─────────────────────────────────────────
   const bringToFront = useCallback((panelId) => {
@@ -344,7 +657,7 @@ export default function Watershed() {
 
   const resetWorkspace = () => {
     setPanels(DEFAULT_PANELS);
-    setMaxZ(10);
+    setMaxZ(30);
   };
 
   // ─── Layer management ─────────────────────────────────────────
@@ -511,6 +824,9 @@ export default function Watershed() {
     if (!m) return;
     if (builderMode !== 'draw') return;
 
+    // Disable double-click zoom while drawing
+    m.doubleClickZoom.disable();
+
     const onMapClick = (e) => {
       const { lng, lat } = e.lngLat;
       drawPoints.current.push([lng, lat]);
@@ -548,9 +864,30 @@ export default function Watershed() {
       m.off('click', onMapClick); 
       m.off('mousemove', onMapMove); 
       m.off('dblclick', onDblClick); 
+      m.doubleClickZoom.enable(); // Re-enable double-click zoom
       window.removeEventListener('keydown', onKeyDown);
     };
   }, [builderMode, updateDrawPreview]);
+
+  // ─── Analyze drawn polygon against HydroSHEDS ────────────────
+  useEffect(() => {
+    if (!drawPolygon || builderMode !== 'draw_done') return;
+    setDrawAnalysis(null);
+    setDrawAnalyzing(true);
+    intersectGeometry(drawPolygon)
+      .then(r => {
+        setDrawAnalysis({
+          area: r.drawn?.areaKm2 || 0,
+          candidates: r.candidates || [],
+          drawn: r.drawn || null
+        });
+      })
+      .catch(err => {
+        console.error('Draw analysis failed:', err);
+        setDrawAnalysis({ area: 0, candidates: [], error: err.message });
+      })
+      .finally(() => setDrawAnalyzing(false));
+  }, [drawPolygon, builderMode]);
 
   // ─── Save custom watershed ────────────────────────────────────
   const handleSaveWatershed = async (geometry, type, source) => {
@@ -578,7 +915,7 @@ export default function Watershed() {
       const ws = await saveCustomWatershed({ name, type, geometry, source });
       setSavedWatersheds(prev => [...prev, ws]);
       // Activate this watershed
-      setWsCtx({ ...ws, centroid: ws.centroid || computeCentroidFromGeom(geometry), dataStatus: 'AVAILABLE' });
+      selectWatershed(ws);
       setBuilderMode(null);
       setDrawPolygon(null);
       setSaveNameInput('');
@@ -604,7 +941,7 @@ export default function Watershed() {
     try {
       const ws = await importWatershed({ name, geojson });
       setSavedWatersheds(prev => [...prev, ws]);
-      setWsCtx({ ...ws, centroid: ws.centroid || computeCentroidFromGeom(ws.geometry), dataStatus: 'AVAILABLE' });
+      selectWatershed({ ...ws, centroid: ws.centroid, dataStatus: 'AVAILABLE' });
       setBuilderMode(null);
       setImportText('');
       setSaveNameInput('');
@@ -612,6 +949,81 @@ export default function Watershed() {
       setImportError(err.message);
     } finally {
       setSavingWs(false);
+    }
+  };
+
+  // ─── Intervention Handlers ──────────────────────────────────────────
+  const handleDeleteIntervention = async (id) => {
+    if (!confirm('Delete this intervention?')) return;
+    try {
+      await deleteIntervention(id);
+      setInterventions(prev => prev.filter(i => i.id !== id));
+    } catch (err) {
+      alert('Failed to delete: ' + err.message);
+    }
+  };
+
+  const handleAddInspection = (intervention) => {
+    setIntFormData({ inspectionFor: intervention, inspectionDate: new Date().toISOString().split('T')[0], inspectionStatus: 'COMPLETED', inspectionNotes: '', inspectionInspector: 'FIELD_TEAM' });
+  };
+
+  const handleSubmitInspection = async (data) => {
+    try {
+      await addInspection(data.inspectionFor.id, {
+        date: data.inspectionDate,
+        status: data.inspectionStatus,
+        notes: data.inspectionNotes,
+        inspector: data.inspectionInspector
+      });
+      setIntFormData({});
+      // Reload interventions to show updated inspection
+      const updated = await listInterventions({ watershedId: wsCtx.id });
+      setInterventions(updated || []);
+    } catch (err) {
+      alert('Failed to add inspection: ' + err.message);
+    }
+  };
+
+  const flyToIntervention = (intv) => {
+    if (intv.coordinates && map.current) {
+      map.current.flyTo({ center: [intv.coordinates.lng, intv.coordinates.lat], zoom: 16, duration: 1500 });
+    }
+  };
+
+  const handleSubmitIntervention = async (data) => {
+    if (!data.name || !data.type || !data.coordinates) {
+      alert('Name, type, and coordinates are required');
+      return;
+    }
+    if (!wsCtx) return;
+    
+    const interventionData = {
+      watershedId: wsCtx.id,
+      name: data.name,
+      type: data.type,
+      status: data.status || 'PLANNED',
+      coordinates: data.coordinates,
+      notes: data.notes || '',
+      constructionDate: data.constructionDate || null,
+      linkedMissionId: data.linkedMissionId || null,
+      linkedObservationId: data.linkedObservationId || null
+    };
+    
+    setIntCreating(true);
+    try {
+      if (data.id) {
+        await updateIntervention(data.id, interventionData);
+        setInterventions(prev => prev.map(i => i.id === data.id ? { ...i, ...interventionData, updatedAt: new Date().toISOString() } : i));
+      } else {
+        const newInt = await createIntervention(interventionData);
+        setInterventions(prev => [...prev, newInt]);
+      }
+      setIntEditing(null);
+      setIntFormData({});
+    } catch (err) {
+      alert('Failed to save intervention: ' + err.message);
+    } finally {
+      setIntCreating(false);
     }
   };
 
@@ -626,6 +1038,187 @@ export default function Watershed() {
       };
     } catch (_) { return null; }
   }
+
+  // ─── Intervention Components ───────────────────────────────────
+  const InterventionCard = ({ intervention, onEdit, onDelete, onInspect, onViewMap }) => {
+    const typeInfo = getInterventionTypeInfo(intervention.type);
+    const statusInfo = getInterventionStatusInfo(intervention.status);
+    const lastInspection = intervention.inspections?.[intervention.inspections.length - 1];
+    
+    return (
+      <div className="int-card" style={{ 
+        background: 'rgba(255,255,255,0.02)', 
+        border: '1px solid rgba(255,255,255,0.08)', 
+        borderRadius: 6, 
+        padding: 12,
+        borderLeft: `3px solid ${statusInfo.color}`
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 16 }}>{typeInfo.icon}</span>
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>{intervention.name}</div>
+              <div style={{ fontSize: 10, color: '#6b7280', textTransform: 'capitalize' }}>{intervention.type}</div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <button className="int-card-btn" onClick={onViewMap} title="View on map"><MapPin size={12} /></button>
+            <button className="int-card-btn" onClick={onInspect} title="Add inspection"><Activity size={12} /></button>
+            <button className="int-card-btn" onClick={onEdit} title="Edit"><Pen size={12} /></button>
+            <button className="int-card-btn" onClick={onDelete} title="Delete"><Trash2 size={12} /></button>
+          </div>
+        </div>
+        
+        <div style={{ display: 'flex', gap: 16, fontSize: 11, marginBottom: 8 }}>
+          <span style={{ color: statusInfo.color, fontWeight: 600, textTransform: 'capitalize' }}>{intervention.status.replace('_', ' ')}</span>
+          {intervention.constructionDate && (
+            <span style={{ color: '#9ca3af' }}>Built: {intervention.constructionDate.split('T')[0]}</span>
+          )}
+          {lastInspection && (
+            <span style={{ color: '#38bdf8' }}>Last: {lastInspection.date.split('T')[0]}</span>
+          )}
+        </div>
+        
+        {intervention.notes && (
+          <div style={{ fontSize: 10, color: '#9ca3af', marginBottom: 8, lineHeight: 1.4 }}>
+            {intervention.notes}
+          </div>
+        )}
+        
+        {intervention.inspections && intervention.inspections.length > 0 && (
+          <div style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: 8 }}>
+            <div style={{ fontSize: 9, color: '#6b7280', textTransform: 'uppercase', marginBottom: 4 }}>INSPECTIONS ({intervention.inspections.length})</div>
+            {intervention.inspections.slice(-3).map((insp, i) => (
+              <div key={i} style={{ fontSize: 10, color: '#9ca3af', display: 'flex', justifyContent: 'space-between' }}>
+                <span>{insp.date.split('T')[0]} — {insp.status}</span>
+                <span>{insp.inspector}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        
+        {intervention.linkedMissionId && (
+          <div style={{ marginTop: 8, fontSize: 10, color: '#38bdf8' }}>
+            Linked to Mission: {intervention.linkedMissionId}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const InterventionForm = ({ initialData, onSubmit, onCancel, isCreating }) => {
+    const [formData, setFormData] = useState({
+      name: initialData.name || '',
+      type: initialData.type || 'Check Dam',
+      status: initialData.status || 'PLANNED',
+      coordinates: initialData.coordinates || { lat: '', lng: '' },
+      notes: initialData.notes || '',
+      constructionDate: initialData.constructionDate ? initialData.constructionDate.split('T')[0] : '',
+      linkedMissionId: initialData.linkedMissionId || '',
+      linkedObservationId: initialData.linkedObservationId || ''
+    });
+
+    const handleChange = (field, value) => setFormData(prev => ({ ...prev, [field]: value }));
+    const handleCoordChange = (coord, value) => setFormData(prev => ({ ...prev, coordinates: { ...prev.coordinates, [coord]: value } }));
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div>
+          <label style={{ display: 'block', fontSize: 10, color: '#6b7280', marginBottom: 4 }}>NAME *</label>
+          <input value={formData.name} onChange={e => handleChange('name', e.target.value)} className="int-form-input" placeholder="Intervention name" />
+        </div>
+        
+        <div>
+          <label style={{ display: 'block', fontSize: 10, color: '#6b7280', marginBottom: 4 }}>TYPE *</label>
+          <select value={formData.type} onChange={e => handleChange('type', e.target.value)} className="int-form-input">
+            {INTERVENTION_TYPES.map(t => <option key={t.value} value={t.value}>{t.icon} {t.label}</option>)}
+          </select>
+        </div>
+        
+        <div>
+          <label style={{ display: 'block', fontSize: 10, color: '#6b7280', marginBottom: 4 }}>STATUS</label>
+          <select value={formData.status} onChange={e => handleChange('status', e.target.value)} className="int-form-input">
+            {INTERVENTION_STATUSES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+          </select>
+        </div>
+        
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+          <div>
+            <label style={{ display: 'block', fontSize: 10, color: '#6b7280', marginBottom: 4 }}>LATITUDE *</label>
+            <input type="number" step="0.000001" value={formData.coordinates.lat} onChange={e => handleCoordChange('lat', parseFloat(e.target.value) || '')} className="int-form-input" placeholder="21.8315" />
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: 10, color: '#6b7280', marginBottom: 4 }}>LONGITUDE *</label>
+            <input type="number" step="0.000001" value={formData.coordinates.lng} onChange={e => handleCoordChange('lng', parseFloat(e.target.value) || '')} className="int-form-input" placeholder="73.7485" />
+          </div>
+        </div>
+        
+        <div>
+          <label style={{ display: 'block', fontSize: 10, color: '#6b7280', marginBottom: 4 }}>CONSTRUCTION DATE</label>
+          <input type="date" value={formData.constructionDate} onChange={e => handleChange('constructionDate', e.target.value)} className="int-form-input" />
+        </div>
+        
+        <div>
+          <label style={{ display: 'block', fontSize: 10, color: '#6b7280', marginBottom: 4 }}>NOTES</label>
+          <textarea value={formData.notes} onChange={e => handleChange('notes', e.target.value)} className="int-form-input" rows={3} placeholder="Additional notes..." />
+        </div>
+        
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }}>
+          <button className="int-form-btn secondary" onClick={onCancel}>CANCEL</button>
+          <button className="int-form-btn primary" onClick={() => onSubmit(formData)} disabled={!formData.name || !formData.type || !formData.coordinates.lat || !formData.coordinates.lng}>
+            {isCreating ? 'CREATE' : 'SAVE'}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const InspectionForm = ({ interventionId, onSubmit, onCancel }) => {
+    const [formData, setFormData] = useState({
+      inspectionDate: new Date().toISOString().split('T')[0],
+      inspectionStatus: 'COMPLETED',
+      inspectionNotes: '',
+      inspectionInspector: 'FIELD_TEAM'
+    });
+
+    const handleChange = (field, value) => setFormData(prev => ({ ...prev, [field]: value }));
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div>
+          <label style={{ display: 'block', fontSize: 10, color: '#6b7280', marginBottom: 4 }}>DATE *</label>
+          <input type="date" value={formData.inspectionDate} onChange={e => handleChange('inspectionDate', e.target.value)} className="int-form-input" />
+        </div>
+        
+        <div>
+          <label style={{ display: 'block', fontSize: 10, color: '#6b7280', marginBottom: 4 }}>STATUS</label>
+          <select value={formData.inspectionStatus} onChange={e => handleChange('inspectionStatus', e.target.value)} className="int-form-input">
+            <option value="COMPLETED">Completed</option>
+            <option value="IN_PROGRESS">In Progress</option>
+            <option value="FAILED">Failed</option>
+            <option value="SCHEDULED">Scheduled</option>
+          </select>
+        </div>
+        
+        <div>
+          <label style={{ display: 'block', fontSize: 10, color: '#6b7280', marginBottom: 4 }}>INSPECTOR</label>
+          <input value={formData.inspectionInspector} onChange={e => handleChange('inspectionInspector', e.target.value)} className="int-form-input" placeholder="FIELD_TEAM" />
+        </div>
+        
+        <div>
+          <label style={{ display: 'block', fontSize: 10, color: '#6b7280', marginBottom: 4 }}>NOTES</label>
+          <textarea value={formData.inspectionNotes} onChange={e => handleChange('inspectionNotes', e.target.value)} className="int-form-input" rows={3} placeholder="Inspection notes..." />
+        </div>
+        
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }}>
+          <button className="int-form-btn secondary" onClick={onCancel}>CANCEL</button>
+          <button className="int-form-btn primary" onClick={() => onSubmit({ inspectionFor: { id: interventionId }, ...formData })}>
+            ADD INSPECTION
+          </button>
+        </div>
+      </div>
+    );
+  };
 
   // ─── Fingerprint bar width ────────────────────────────────────
   const ndviToWidth = (v) => v == null ? 0 : Math.max(5, Math.min(95, ((v + 0.2) / 1.0) * 100));
@@ -655,7 +1248,7 @@ export default function Watershed() {
     const groups = {};
     const layerList = availableLayers.length > 0
       ? availableLayers
-      : Object.entries(LAYER_REGISTRY).map(([id, meta]) => ({ id, ...meta }));
+      : Object.entries(WATERSHED_LAYERS).map(([id, meta]) => ({ id, ...meta }));
     layerList.forEach(l => {
       const g = l.group || 'OTHER';
       if (!groups[g]) groups[g] = [];
@@ -707,8 +1300,14 @@ export default function Watershed() {
                 <div key={r.id} className="ws-search-item" onMouseDown={() => selectSearchResult(r)}>
                   <MapPin size={11} />
                   <div>
-                    <div className="wsi-name">{r.name}</div>
-                    <div className="wsi-meta">{r.areaKm2 ? `${r.areaKm2} km²` : ''} · {r.source || ''} · {r.matchType}</div>
+                    <div className="wsi-name">{r.name || r.displayName || 'Unknown'}</div>
+                    <div className="wsi-meta">
+                      {r.areaKm2 ? `${r.areaKm2} km²` : ''} 
+                      {r.areaKm2 && ' · '}
+                      {r.source || r.placeType || ''} 
+                      {r.source && r.matchType ? ' · ' + r.matchType : ''}
+                      {r.confidence ? ` · ${Math.round(r.confidence * 100)}%` : ''}
+                    </div>
                   </div>
                 </div>
               ))}
@@ -722,9 +1321,10 @@ export default function Watershed() {
           {wsCtx && !wsLoading && (
             <>
               <span className="ws-ctx-name">{wsCtx.name}</span>
-              <span className="ws-ctx-type">{wsCtx.type}</span>
+              <span className="ws-ctx-type">{wsCtx.isCustom ? 'CUSTOM REGION' : `WATERSHED${wsCtx.level ? ` · L${wsCtx.level}` : ''}`}</span>
               {wsCtx.areaKm2 && <span className="ws-ctx-meta">{wsCtx.areaKm2.toLocaleString()} km²</span>}
-              {wsCtx.source && <span className="ws-ctx-source">{wsCtx.source.split(' ')[0]}</span>}
+              {wsCtx.source && <span className="ws-ctx-source">{wsCtx.source === 'hydrosheds' ? 'HYDROSHEDS' : wsCtx.source.toUpperCase()}</span>}
+              <span className="ws-ctx-status">{wsCtx.dataStatus || 'AVAILABLE'}</span>
             </>
           )}
           {!wsCtx && !wsLoading && (
@@ -754,6 +1354,30 @@ export default function Watershed() {
           <Plus size={13} /> NEW
         </button>
 
+        {/* Demo Watersheds */}
+        <div style={{ position: 'relative' }}>
+          <button className="ws-demo-btn" onClick={() => setDemoOpen(!demoOpen)}>
+            <Activity size={13} /> DEMO ({DEMO_WATERSHEDS.length})
+          </button>
+          {demoOpen && (
+            <div className="ws-demo-dropdown" style={{ minWidth: 320 }}>
+              <div className="ws-dropdown-header">CURATED EXAMPLES</div>
+              {DEMO_WATERSHEDS.map(demo => (
+                <div key={demo.id} className="ws-demo-item" onClick={() => loadDemoWatershed(demo)} style={{ cursor: demoLoading === demo.id ? 'wait' : 'pointer' }}>
+                  <div style={{ flex: 1 }}>
+                    <span style={{ fontWeight: 600 }}>{demo.name}</span>
+                    <div style={{ color: '#6b7280', fontSize: '10px', marginTop: 2 }}>{demo.description}</div>
+                    <div style={{ color: '#9ca3af', fontSize: '9px', fontFamily: 'monospace', marginTop: 2 }}>
+                      {demo.areaKm2?.toLocaleString()} km² · {demo.river} · {demo.source}
+                    </div>
+                  </div>
+                  {demoLoading === demo.id && <span className="ws-spinner sm" />}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* Saved */}
         <div style={{ position: 'relative' }}>
           <button className="ws-saved-btn" onClick={() => setSavedOpen(!savedOpen)}>
@@ -761,10 +1385,16 @@ export default function Watershed() {
           </button>
           {savedOpen && (
             <div className="ws-saved-dropdown">
-              {savedWatersheds.length === 0 && <div style={{ padding: '8px 12px', color: '#6b7280', fontSize: '11px' }}>No saved watersheds</div>}
+              <div className="ws-dropdown-header">MY SAVED CONTEXTS</div>
+              {savedWatersheds.length === 0 && (
+                <div style={{ padding: '8px 12px', color: '#6b7280', fontSize: '11px' }}>
+                  NO SAVED WATERSHEDS<br/>
+                  <span style={{ fontSize: '10px' }}>Save a watershed to access it here.</span>
+                </div>
+              )}
               {savedWatersheds.map(ws => (
                 <div key={ws.id} className="ws-saved-item" onClick={() => {
-                  setWsCtx({ ...ws, centroid: ws.centroid || computeCentroidFromGeom(ws.geometry), dataStatus: 'AVAILABLE' });
+                  selectWatershed({ ...ws, centroid: ws.centroid, dataStatus: 'AVAILABLE' });
                   setSavedOpen(false);
                 }}>
                   <span>{ws.name}</span>
@@ -779,21 +1409,31 @@ export default function Watershed() {
         </div>
       </div>
 
-      {/* ── MAP CLICK POPUP ──────────────────────────────────────── */}
-      {clickPopup && (
+      {/* ── MAP CONTEXT MENU ──────────────────────────────────────── */}
+      {clickPopup?.type === 'context-menu' && (
         <div
           className="ws-click-popup"
           style={{ left: clickPopup.x + 16, top: clickPopup.y - 20 }}
         >
+          <div className="wcp-title">LOCATION ACTIONS</div>
           <div className="wcp-coords">{clickPopup.lat.toFixed(5)}, {clickPopup.lon.toFixed(5)}</div>
-          <button className="wcp-btn primary" onClick={() => handleResolve(clickPopup.lat, clickPopup.lon)}>
+          <button className="wcp-btn" onClick={() => {
+            setClickPopup(null);
+            document.querySelector('.ws-search-input')?.focus();
+          }}>
+            <Search size={12} /> SEARCH LOCATION
+          </button>
+          <button className="wcp-btn" onClick={() => handleResolve(clickPopup.lat, clickPopup.lon)}>
             <Crosshair size={12} /> RESOLVE WATERSHED
           </button>
           <button className="wcp-btn" onClick={() => { setClickPopup(null); startDraw(); }}>
-            <Pen size={12} /> DRAW WATERSHED
+            <Pen size={12} /> DRAW BOUNDARY
           </button>
-          <button className="wcp-btn" onClick={() => setClickPopup(null)}>
-            <X size={12} /> DISMISS
+          <button className="wcp-btn" onClick={() => {
+             // Handle "USE THIS LOCATION" placeholder action if needed
+             setClickPopup(null);
+          }}>
+            <MapPin size={12} /> USE THIS LOCATION
           </button>
         </div>
       )}
@@ -873,34 +1513,89 @@ export default function Watershed() {
           </div>
           <div className="ws-db-right">
             {drawPointsState > 0 && <button className="ws-db-btn" onClick={undoDraw}>UNDO</button>}
-            {drawPointsState > 0 && <button className="ws-db-btn" onClick={clearDraw}>CLEAR</button>}
+            {drawPointsState >= 3 && <button className="ws-db-btn primary" onClick={() => {
+              if (drawPoints.current.length >= 3) {
+                const coords = [...drawPoints.current, drawPoints.current[0]];
+                setDrawPolygon({ type: 'Polygon', coordinates: [coords] });
+                setBuilderMode('draw_done');
+              }
+            }}>FINISH</button>}
             <button className="ws-db-btn cancel" onClick={cancelDraw}><X size={12} /> CANCEL</button>
           </div>
         </div>
       )}
 
-      {/* Draw done — save dialog */}
+      {/* Draw done — Region Analysis */}
       {builderMode === 'draw_done' && drawPolygon && (
-        <div className="ws-save-dialog">
-          <div className="wsd-header">CUSTOM WATERSHED</div>
-          <div className="wsd-geom-stats">
-            {drawPoints.current.length} vertices · Ready to save
+        <div className="ws-save-dialog" style={{ width: 340, maxHeight: 480, overflowY: 'auto' }}>
+          <div className="wsd-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>REGION ANALYSIS</span>
+            <button className="wbc-action-btn cancel" style={{ padding: '2px 8px' }} onClick={cancelDraw}>✕</button>
           </div>
-          <input
-            className="wbc-input"
-            placeholder="Watershed name"
-            value={saveNameInput}
-            onChange={e => setSaveNameInput(e.target.value)}
-          />
-          <div className="wsd-actions">
-            <button className="wbc-action-btn secondary" onClick={() => setBuilderMode('draw')}>EDIT</button>
-            <button className="wbc-action-btn secondary" onClick={cancelDraw}>CANCEL</button>
-            <button className="wbc-action-btn primary" onClick={() => handleSaveWatershed(drawPolygon, 'CUSTOM', 'User-drawn')} disabled={savingWs}>
-              {savingWs ? 'SAVING…' : 'SAVE WATERSHED'}
-            </button>
-          </div>
+
+          {drawAnalyzing ? (
+            <div className="wsd-geom-stats" style={{ color: '#06b6d4', padding: '16px 0', textAlign: 'center' }}>
+              <div style={{ marginBottom: 6 }}>⟳ ANALYZING GEOMETRY…</div>
+              <div style={{ fontSize: 11, color: '#64748b' }}>Querying HydroSHEDS watershed intersections</div>
+            </div>
+          ) : drawAnalysis ? (
+            <>
+              <div className="wsd-geom-stats">
+                <span>Area: <strong>{drawAnalysis.area > 1000 ? `${(drawAnalysis.area/1000).toFixed(1)}k` : drawAnalysis.area.toFixed(0)} km²</strong></span>
+                <span style={{ marginLeft: 12 }}>Vertices: {drawPoints.current.length}</span>
+              </div>
+
+              {drawAnalysis.error ? (
+                <div style={{ color: '#ef4444', fontSize: 12, padding: '8px 0' }}>Analysis error: {drawAnalysis.error}</div>
+              ) : drawAnalysis.candidates.length === 0 ? (
+                <div style={{ padding: '12px 0' }}>
+                  <div style={{ color: '#f59e0b', fontSize: 12, marginBottom: 8 }}>NO WATERSHED FOUND in this area.</div>
+                  <div style={{ color: '#64748b', fontSize: 11, marginBottom: 12 }}>You can still use this region for Earth Engine analysis.</div>
+                  <div className="wsd-actions">
+                    <button className="wbc-action-btn secondary" onClick={() => setBuilderMode('draw')}>EDIT</button>
+                    <button className="wbc-action-btn primary" onClick={() => {
+                      selectWatershed({ id: `custom-drawn-${Date.now()}`, name: saveNameInput || 'Drawn Region', type: 'DRAWN_REGION', geometry: drawPolygon, isCustom: true, dataStatus: 'AVAILABLE' });
+                      setBuilderMode(null);
+                    }}>USE REGION</button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 8 }}>
+                    {drawAnalysis.candidates.length} WATERSHED{drawAnalysis.candidates.length > 1 ? 'S' : ''} FOUND
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
+                    {drawAnalysis.candidates.slice(0, 6).map((c, i) => (
+                      <button key={c.id || i}
+                        style={{ background: 'rgba(6,182,212,0.08)', border: '1px solid rgba(6,182,212,0.3)', borderRadius: 6, padding: '8px 10px', cursor: 'pointer', textAlign: 'left', color: '#e2e8f0', transition: 'background 0.15s' }}
+                        onMouseEnter={e => e.currentTarget.style.background = 'rgba(6,182,212,0.2)'}
+                        onMouseLeave={e => e.currentTarget.style.background = 'rgba(6,182,212,0.08)'}
+                        onClick={() => { loadDemoWatershed({ id: c.id, centroid: c.centroid, areaKm2: c.areaKm2 || 10000 }); setBuilderMode(null); setDrawPolygon(null); setDrawAnalysis(null); }}>
+                        <div style={{ fontSize: 12, fontWeight: 600 }}>{c.name || c.id}</div>
+                        <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>
+                          Level {c.level} · {c.areaKm2 ? `${(c.areaKm2/1000).toFixed(0)}k km²` : '—'}
+                          {c.overlapPercent != null ? ` · ${c.overlapPercent.toFixed(0)}% overlap` : ''}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="wsd-actions" style={{ borderTop: '1px solid rgba(100,116,139,0.3)', paddingTop: 10 }}>
+                    <button className="wbc-action-btn secondary" onClick={() => setBuilderMode('draw')}>EDIT</button>
+                    <button className="wbc-action-btn secondary" onClick={() => {
+                      selectWatershed({ id: `custom-drawn-${Date.now()}`, name: saveNameInput || 'Drawn Region', type: 'DRAWN_REGION', geometry: drawPolygon, isCustom: true, dataStatus: 'AVAILABLE' });
+                      setBuilderMode(null);
+                    }}>USE DRAWN AREA</button>
+                  </div>
+                </>
+              )}
+            </>
+          ) : (
+            <div className="wsd-geom-stats">No analysis yet.</div>
+          )}
         </div>
       )}
+
+
 
       {/* ── FLOATING PANELS ──────────────────────────────────────── */}
 
@@ -921,8 +1616,12 @@ export default function Watershed() {
           <StatusBadge status={fpStatus} />
           {wsCtx?.areaKm2 && <span style={{ fontFamily: 'monospace', fontSize: '10px', color: '#6b7280' }}>{wsCtx.areaKm2.toLocaleString()} km²</span>}
         </div>
-        {fpStatus === 'LOADING' && <div className="fp-loading"><span className="ws-spinner" /> COMPUTING…</div>}
-        {fpStatus === 'ERROR' && <div className="fp-msg error">ANALYSIS ERROR — Earth Engine may be unavailable</div>}
+        {fpStatus === 'LOADING' && <div className="fp-loading"><span className="ws-spinner" /> Loading live Earth observation data...</div>}
+        {fpStatus === 'ERROR' && (
+          <div className="fp-msg error">
+            Earth observation data temporarily unavailable.
+          </div>
+        )}
         {!wsCtx && fpStatus !== 'LOADING' && (
           <div className="fp-msg">Select a watershed to begin analysis</div>
         )}
@@ -1035,7 +1734,7 @@ export default function Watershed() {
               const isLoading = layerLoading[layerId];
               // Local state for opacity/status
               const currentLayerState = layerState[layerId] || {};
-              const meta = LAYER_REGISTRY[layerId] || {};
+              const meta = WATERSHED_LAYERS[layerId] || {};
               return (
                 <div key={layerId} className={`layer-toggle ${isActive ? 'active' : ''}`}>
                   <div className="lt-row" onClick={() => wsCtx && !isLoading && toggleLayer(layerId)}>
@@ -1053,7 +1752,7 @@ export default function Watershed() {
                       className="layer-opacity"
                     />
                   )}
-                  {isActive && meta.hasLegend && layerId === 'lulc' && (
+                  {isActive && meta.hasLegend && meta.legendType === 'lulc' && (
                     <div className="lulc-legend">
                       {LULC_LEGEND.map(l => (
                         <span key={l.label} className="legend-chip" title={l.label}>
@@ -1104,61 +1803,236 @@ export default function Watershed() {
         defaultSize={panels.intervention.defaultSize}
       >
         <div className="int-status">
-          <StatusBadge status={selectedFeature?.watershedName?.toUpperCase().includes('SARDAR SAROVAR') ? 'ACTIVE' : 'PENDING'} />
+          <StatusBadge status={intStatus === 'AVAILABLE' && interventions.length > 0 ? 'ACTIVE' : intStatus} />
           <span style={{ fontFamily: 'monospace', fontSize: '10px', color: '#4b5563', marginLeft: 8 }}>
-            {selectedFeature?.watershedName?.toUpperCase().includes('SARDAR SAROVAR') ? 'CONNECTED: PUBLIC DEMO' : 'NOT CONNECTED'}
+            {intStatus === 'LOADING' ? 'LOADING…' : intStatus === 'ERROR' ? 'ERROR LOADING' : interventions.length > 0 ? `${interventions.length} INTERVENTION${interventions.length !== 1 ? 'S' : ''}` : 'NONE FOUND'}
           </span>
         </div>
         
-        {selectedFeature?.watershedName?.toUpperCase().includes('SARDAR SAROVAR') ? (
-          <div className="int-content" style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <div style={{ background: 'rgba(56,189,248,0.05)', border: '1px solid rgba(56,189,248,0.2)', padding: 12, borderRadius: 6 }}>
-              <div style={{ color: '#38bdf8', fontSize: 10, fontWeight: 700, marginBottom: 4 }}>INTERVENTION TYPE</div>
-              <div style={{ color: '#fff', fontSize: 13, fontWeight: 600 }}>MAJOR DAM & HYDROELECTRIC</div>
-              <div style={{ color: '#9ca3af', fontSize: 11, marginTop: 4 }}>Sardar Sarovar Narmada Nigam Ltd</div>
-            </div>
-            
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              <div style={{ background: 'rgba(255,255,255,0.02)', padding: 8, borderRadius: 4 }}>
-                <div style={{ color: '#6b7280', fontSize: 9 }}>STATUS</div>
-                <div style={{ color: '#10b981', fontSize: 12, fontWeight: 600 }}>OPERATIONAL</div>
-              </div>
-              <div style={{ background: 'rgba(255,255,255,0.02)', padding: 8, borderRadius: 4 }}>
-                <div style={{ color: '#6b7280', fontSize: 9 }}>LAST INSP.</div>
-                <div style={{ color: '#e5e7eb', fontSize: 12 }}>2024-05-12</div>
-              </div>
-            </div>
-            
-            <div style={{ marginTop: 4 }}>
-              <div style={{ color: '#6b7280', fontSize: 10, marginBottom: 6 }}>RECENT EVIDENCE</div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: 'rgba(255,255,255,0.05)', borderRadius: 4, fontSize: 11 }}>
-                <Check size={12} color="#10b981" /> Structural scan complete
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: 'rgba(255,255,255,0.05)', borderRadius: 4, fontSize: 11, marginTop: 4 }}>
-                <Check size={12} color="#10b981" /> Seasonal spillway test
-              </div>
-            </div>
-          </div>
-        ) : (
+        {intStatus === 'LOADING' && <div className="fp-loading"><span className="ws-spinner" /> LOADING INTERVENTIONS…</div>}
+        {intStatus === 'ERROR' && <div className="fp-msg error">FAILED TO LOAD INTERVENTIONS</div>}
+        {intStatus !== 'LOADING' && interventions.length === 0 && (
           <div className="int-empty">
             <Activity size={14} color="#6b7280" />
             <div style={{ marginTop: 6, fontWeight: 600, color: '#f87171' }}>
-              NO EVIDENCE UPLOADED
+              NO INTERVENTIONS FOUND
             </div>
             <div style={{ marginTop: 4, color: '#4b5563' }}>
-              Intervention data requires local field database integration or recent uploads.
+              Add interventions for this watershed using the button below.
             </div>
           </div>
         )}
+        {intStatus !== 'LOADING' && interventions.length > 0 && (
+          <div className="int-content" style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10, maxHeight: '400px', overflowY: 'auto' }}>
+            {interventions.map((intv, idx) => {
+              const statusInfo = getInterventionStatusInfo(intv.status);
+              const typeInfo = getInterventionTypeInfo(intv.type);
+              const IconComponent = { Hammer, Wrench, FilePlus }[typeInfo.iconName] || Hammer;
+              return (
+                <div key={intv.id} className="int-item" style={{ 
+                  background: 'rgba(255,255,255,0.03)', 
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: 8, 
+                  padding: 12 
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                    <div style={{ 
+                      width: 36, height: 36, borderRadius: 8, 
+                      background: statusInfo.bg,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      flexShrink: 0
+                    }}>
+                      <IconComponent size={16} color={statusInfo.color} />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontWeight: 600, fontSize: 13, color: '#fff', marginBottom: 2 }}>{intv.name}</div>
+                          <div style={{ fontSize: 10, color: '#6b7280' }}>{intv.type}</div>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span style={{ 
+                            fontSize: 9, fontFamily: 'monospace', fontWeight: 600,
+                            padding: '2px 6px', borderRadius: 3,
+                            background: statusInfo.bg, color: statusInfo.color,
+                            border: `1px solid ${statusInfo.color}40`
+                          }}>
+                            {statusInfo.label}
+                          </span>
+                        </div>
+                      </div>
+                      {intv.notes && (
+                        <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 4, lineHeight: 1.4 }}>
+                          {intv.notes}
+                        </div>
+                      )}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8, fontSize: 9, color: '#6b7280' }}>
+                        {intv.constructionDate && (
+                          <span><Calendar size={10} style={{ marginRight: 4, verticalAlign: 'middle' }} /> Built: {new Date(intv.constructionDate).toLocaleDateString()}</span>
+                        )}
+                        {intv.inspections?.length > 0 && (
+                          <span><Camera size={10} style={{ marginRight: 4, verticalAlign: 'middle' }} /> Last inspection: {new Date(intv.inspections[intv.inspections.length - 1].date).toLocaleDateString()}</span>
+                        )}
+                        {intv.linkedMissionId && (
+                          <span><Navigation size={10} style={{ marginRight: 4, verticalAlign: 'middle' }} /> Mission: {intv.linkedMissionId.slice(0, 12)}…</span>
+                        )}
+                        {intv.linkedObservationId && (
+                          <span><MapPinIcon size={10} style={{ marginRight: 4, verticalAlign: 'middle' }} /> Obs: {intv.linkedObservationId.slice(0, 12)}…</span>
+                        )}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <button className="int-btn small" onClick={() => setIntEditing(intv)}>
+                        <Wrench size={11} /> EDIT
+                      </button>
+                      <button className="int-btn small" style={{ background: 'rgba(239,68,68,0.1)', borderColor: 'rgba(239,68,68,0.3)', color: '#f87171' }} onClick={() => {
+                        if (confirm(`Delete intervention "${intv.name}"?`)) {
+                          deleteIntervention(intv.id).then(() => setInterventions(prev => prev.filter(i => i.id !== intv.id)));
+                        }
+                      }}>
+                        <Trash2 size={11} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        
+        {/* Add/Edit Intervention Form */}
+        {intEditing && (
+          <div className="int-form-overlay" style={{ marginTop: 12, padding: 12, background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <div style={{ fontWeight: 600, fontSize: 12 }}>{intEditing.id ? 'EDIT INTERVENTION' : 'ADD INTERVENTION'}</div>
+              <button onClick={() => setIntEditing(null)} style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer' }}>
+                <X size={16} />
+              </button>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div>
+                <label style={{ display: 'block', fontSize: 9, color: '#6b7280', marginBottom: 4 }}>NAME</label>
+                <input
+                  className="wbc-input"
+                  value={intFormData.name || ''}
+                  onChange={e => setIntFormData({ ...intFormData, name: e.target.value })}
+                  placeholder="Intervention name"
+                />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: 9, color: '#6b7280', marginBottom: 4 }}>TYPE</label>
+                <select
+                  className="wbc-input"
+                  value={intFormData.type || ''}
+                  onChange={e => setIntFormData({ ...intFormData, type: e.target.value })}
+                >
+                  <option value="">Select type</option>
+                  {INTERVENTION_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
+              <div style={{ gridColumn: 'span 2' }}>
+                <label style={{ display: 'block', fontSize: 9, color: '#6b7280', marginBottom: 4 }}>STATUS</label>
+                <select
+                  className="wbc-input"
+                  value={intFormData.status || 'PLANNED'}
+                  onChange={e => setIntFormData({ ...intFormData, status: e.target.value })}
+                >
+                  {INTERVENTION_STATUSES.map(s => <option key={s} value={s}>{getInterventionStatusInfo(s).label}</option>)}
+                </select>
+              </div>
+              <div style={{ gridColumn: 'span 2' }}>
+                <label style={{ display: 'block', fontSize: 9, color: '#6b7280', marginBottom: 4 }}>COORDINATES (lat, lng)</label>
+                <input
+                  className="wbc-input"
+                  value={intFormData.coordinates ? `${intFormData.coordinates.lat}, ${intFormData.coordinates.lng}` : ''}
+                  onChange={e => {
+                    const [lat, lng] = e.target.value.split(',').map(v => parseFloat(v.trim()));
+                    if (!isNaN(lat) && !isNaN(lng)) {
+                      setIntFormData({ ...intFormData, coordinates: { lat, lng } });
+                    }
+                  }}
+                  placeholder="21.83, 73.75"
+                />
+              </div>
+              <div style={{ gridColumn: 'span 2' }}>
+                <label style={{ display: 'block', fontSize: 9, color: '#6b7280', marginBottom: 4 }}>NOTES</label>
+                <textarea
+                  className="wbc-textarea"
+                  style={{ minHeight: 60 }}
+                  value={intFormData.notes || ''}
+                  onChange={e => setIntFormData({ ...intFormData, notes: e.target.value })}
+                  placeholder="Notes, specifications, etc."
+                />
+              </div>
+              <div style={{ gridColumn: 'span 2' }}>
+                <label style={{ display: 'block', fontSize: 9, color: '#6b7280', marginBottom: 4 }}>CONSTRUCTION DATE (optional)</label>
+                <input
+                  className="wbc-input"
+                  type="date"
+                  value={intFormData.constructionDate ? intFormData.constructionDate.split('T')[0] : ''}
+                  onChange={e => setIntFormData({ ...intFormData, constructionDate: e.target.value ? new Date(e.target.value).toISOString() : '' })}
+                />
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+              <button className="wbc-action-btn secondary" onClick={() => { setIntEditing(null); setIntFormData({}); }}>CANCEL</button>
+              <button 
+                className="wbc-action-btn primary" 
+                onClick={async () => {
+                  if (!intFormData.name || !intFormData.type || !intFormData.coordinates) {
+                    alert('Name, type, and coordinates are required');
+                    return;
+                  }
+                  if (!wsCtx) return;
+                  
+                  const data = {
+                    watershedId: wsCtx.id,
+                    name: intFormData.name,
+                    type: intFormData.type,
+                    status: intFormData.status || 'PLANNED',
+                    coordinates: intFormData.coordinates,
+                    notes: intFormData.notes || '',
+                    constructionDate: intFormData.constructionDate || null,
+                    linkedMissionId: intFormData.linkedMissionId || null,
+                    linkedObservationId: intFormData.linkedObservationId || null
+                  };
+                  
+                  setIntCreating(true);
+                  try {
+                    if (intEditing.id) {
+                      await updateIntervention(intEditing.id, data);
+                    } else {
+                      const newInt = await createIntervention(data);
+                      setInterventions(prev => [...prev, newInt]);
+                    }
+                    setIntEditing(null);
+                    setIntFormData({});
+                  } catch (err) {
+                    alert('Failed to save intervention: ' + err.message);
+                  } finally {
+                    setIntCreating(false);
+                  }
+                }}
+                disabled={intCreating}
+              >
+                {intCreating ? 'SAVING…' : (intEditing.id ? 'UPDATE' : 'CREATE')}
+              </button>
+            </div>
+          </div>
+        )}
+        
         <div className="int-actions">
           <button className="int-btn" onClick={() => navigate('/field')}>
-            <MapPin size={12} /> FIELD OBSERVATION
+            <MapPinIcon size={12} /> FIELD OBSERVATION
           </button>
           <button className="int-btn" onClick={() => navigate('/mission')}>
             <Navigation size={12} /> PLAN MISSION
           </button>
           <button className="int-btn" onClick={() => navigate('/compare')}>
             <ExternalLink size={12} /> COMPARE SATELLITE
+          </button>
+          <button className="int-btn primary" onClick={() => { setIntEditing({}); setIntFormData({ coordinates: wsCtx?.centroid || { lat: 21.83, lng: 73.75 } }); }}>
+            <Plus size={12} /> ADD INTERVENTION
           </button>
         </div>
       </FloatingPanel>
@@ -1270,6 +2144,23 @@ export default function Watershed() {
         <div className="ws-resolving-overlay">
           <div className="ws-spinner lg" />
           <div>RESOLVING WATERSHED…</div>
+        </div>
+      )}
+
+      {/* Development Diagnostic */}
+      {import.meta.env.DEV && (
+        <div className="dev-diagnostic" style={{
+          position: 'absolute', bottom: 10, left: 88, background: 'rgba(0,0,0,0.8)',
+          padding: 10, border: '1px solid #3b82f6', color: '#38bdf8', fontFamily: 'monospace',
+          zIndex: 9999, fontSize: 10, pointerEvents: 'none', borderRadius: 6
+        }}>
+          <div>EE: {fpStatus === 'ERROR' ? 'ERROR' : (wsCtx ? 'CONNECTED' : 'WAITING')}</div>
+          <div>Watershed: {wsCtx?.id || 'NONE'}</div>
+          <div>Fingerprint: {fpStatus}</div>
+          <div>NDVI: {fingerprint?.vegetation?.value ?? 'N/A'}</div>
+          <div>NDWI: {fingerprint?.water?.value ?? 'N/A'}</div>
+          <div>Timeline: {tlStatus}</div>
+          <div>Layers: {availableLayers.length > 0 ? 'SUCCESS' : 'PENDING'}</div>
         </div>
       )}
     </div>

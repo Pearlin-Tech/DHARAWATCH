@@ -267,3 +267,108 @@
 /* Gen overlay pulse ring */
 .gen-stage-ring { animation: pulse 1.2s ease-in-out infinite; }
 
+/* ── Mission Form Modal ────────────────────────────────────────── */
+.mission-form-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0,0,0,0.7);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: overlayFadeIn 0.15s ease;
+}
+
+@keyframes overlayFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.mission-form-modal {
+  background: rgba(9, 11, 15, 0.98);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 480px;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.8);
+  animation: modalSlideIn 0.2s ease;
+}
+
+@keyframes modalSlideIn {
+  from { opacity: 0; transform: scale(0.95) translateY(10px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.mission-form-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  font-family: monospace;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  color: #f2f3f5;
+}
+
+.mission-form-close {
+  color: #6b7280;
+  cursor: pointer;
+  padding: 2px;
+}
+.mission-form-close:hover { color: #f2f3f5; }
+
+.int-form-input {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: #f2f3f5;
+  font-family: monospace;
+  font-size: 12px;
+  outline: none;
+  width: 100%;
+  transition: border-color 0.2s;
+}
+
+.int-form-input:focus { border-color: rgba(37, 99, 235, 0.5); }
+
+.int-form-btn {
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-family: monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.int-form-btn.primary {
+  background: rgba(37, 99, 235, 0.2);
+  border: 1px solid rgba(37, 99, 235, 0.4);
+  color: #60a5fa;
+}
+.int-form-btn.primary:hover { background: rgba(37, 99, 235, 0.35); }
+.int-form-btn.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.int-form-btn.secondary {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: #6b7280;
+}
+.int-form-btn.secondary:hover { color: #f2f3f5; }
+
+/* Saved Missions Dropdown in Bottom Strip */
+.mbs-dropdown {
+  animation: overlayFadeIn 0.1s ease;
+}
+.mbs-dropdown div[style*="padding: 12px"] {
+  padding: 12px !important;
+}
+

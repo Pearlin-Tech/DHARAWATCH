@@ -284,6 +284,20 @@ export async function getSatelliteContextForLocation(lat, lon) {
   }
 }
 
+// ─── Reverse Geocode (OpenStreetMap Nominatim) ────────────────────
+export async function reverseGeocode(lat, lon) {
+  try {
+    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}`, {
+      headers: { 'User-Agent': 'DHARAWATCH/1.0' }
+    });
+    const data = await res.json();
+    return data?.display_name || null;
+  } catch (err) {
+    console.warn('[Field] reverseGeocode failed:', err.message);
+    return null;
+  }
+}
+
 // ─── Observation Persistence (delegates to DB passed in) ──────────
 export function buildObservationRecord({ obsId, photoId, exif, aiAnalysis,
   lat, lon, locationSource, captureTime, themes, condition, synthesis,

@@ -72,6 +72,7 @@ function getStepperState(obs, uploadState, fieldContext) {
 }
 
 import { useGlobalContext } from '../../context/GlobalContext';
+import { useAppContext } from '../../components/UniversalContextBar';
 
 // ─── Component ───────────────────────────────────────────────────
 export default function Field() {
@@ -88,12 +89,43 @@ export default function Field() {
   const { loaded: mapsLoaded, error: mapsError } = useGoogleMaps(googleMapsApiKey);
 
   const { selectedFeature } = useGlobalContext();
+  const { setCurrentObservation, setCurrentWatershed, setCurrentMission } = useAppContext();
 
   // ─ Core state ─
   const [obs, setObs] = useState(null);
   const [uploadState, setUploadState] = useState('idle');
   const [uploadError, setUploadError] = useState('');
   const [photoUrl, setPhotoUrl] = useState(null);
+
+  // ─── Sync observation to Universal Context Bar ──────────────────
+  useEffect(() => {
+    if (obs) {
+      setCurrentObservation({
+        id: obs.id,
+        status: obs.status,
+        location: obs.location,
+        watershedId: obs.watershedId,
+        watershedName: obs.watershedName,
+        missionId: obs.missionId,
+        stopId: obs.stopId,
+        evidenceId: obs.evidenceId
+      });
+      if (obs.watershedId) {
+        setCurrentWatershed({
+          id: obs.watershedId,
+          name: obs.watershedName,
+          type: 'OBSERVATION_WATERSHED'
+        });
+      }
+      if (obs.missionId) {
+        setCurrentMission({
+          id: obs.missionId,
+          name: obs.missionId,
+          type: 'OBSERVATION_MISSION'
+        });
+      }
+    }
+  }, [obs, setCurrentObservation, setCurrentWatershed, setCurrentMission]);
 
   // ─ Analysis state ─
   const [analysisState, setAnalysisState] = useState('idle');

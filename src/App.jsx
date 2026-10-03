@@ -19,33 +19,38 @@ import Reports from './pages/Reports/Reports';
 import ReportDetail from './pages/Reports/ReportDetail';
 import Settings from './pages/Settings/Settings';
 import { GlobalProvider } from './context/GlobalContext';
+import { AppProvider, UniversalContextBar } from './components/UniversalContextBar';
+import './components/UniversalContextBar.css';
 
 function App() {
   return (
-    <GlobalProvider>
-      <Router>
-        <Routes>
-          <Route path="/" element={<Home />} />
-          <Route path="/explore" element={<Explore />} />
-          <Route path="/watershed" element={<Watershed />} />
-          <Route path="/field" element={<Field />} />
-          <Route path="/mission" element={<Mission />} />
-          <Route path="/ask" element={<Ask />} />
-          <Route path="/detect" element={<Detect />} />
-          <Route path="/compare" element={<Compare />} />
-          <Route path="/measure" element={<Measure />} />
-          <Route path="/area" element={<Area />} />
-          <Route path="/watch" element={<WatchList />} />
-          <Route path="/watch/new" element={<WatchNew />} />
-          <Route path="/watch/:id" element={<WatchDetail />} />
-          <Route path="/timeline" element={<Timeline />} />
-          <Route path="/evidence/:id" element={<Evidence />} />
-          <Route path="/reports" element={<Reports />} />
-          <Route path="/reports/:id" element={<ReportDetail />} />
-          <Route path="/settings" element={<Settings />} />
-        </Routes>
-      </Router>
-    </GlobalProvider>
+    <AppProvider>
+      <GlobalProvider>
+        <Router>
+          <UniversalContextBar />
+          <Routes>
+            <Route path="/" element={<Home />} />
+            <Route path="/explore" element={<Explore />} />
+            <Route path="/watershed" element={<Watershed />} />
+            <Route path="/field" element={<Field />} />
+            <Route path="/mission" element={<Mission />} />
+            <Route path="/ask" element={<Ask />} />
+            <Route path="/detect" element={<Detect />} />
+            <Route path="/compare" element={<Compare />} />
+            <Route path="/measure" element={<Measure />} />
+            <Route path="/area" element={<Area />} />
+            <Route path="/watch" element={<WatchList />} />
+            <Route path="/watch/new" element={<WatchNew />} />
+            <Route path="/watch/:id" element={<WatchDetail />} />
+            <Route path="/timeline" element={<Timeline />} />
+            <Route path="/evidence/:id" element={<Evidence />} />
+            <Route path="/reports" element={<Reports />} />
+            <Route path="/reports/:id" element={<ReportDetail />} />
+            <Route path="/settings" element={<Settings />} />
+          </Routes>
+        </Router>
+      </GlobalProvider>
+    </AppProvider>
   );
 }
 
