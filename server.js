@@ -1379,13 +1379,26 @@ app.delete('/api/interventions/:id', async (req, res) => {
   }
 });
 
+// Earth Engine compare results cached for 1h (EE tile URLs stay valid for a few hours)
+const compareCache = new Map();
+const COMPARE_CACHE_TTL_MS = 60 * 60 * 1000;
+
 app.post('/api/compare', async (req, res) => {
   try {
     const { baselineDate, currentDate, coords, bounds, indicator } = req.body;
     if (!baselineDate || !currentDate || !coords) {
       return res.status(400).json({ status: 'error', code: 'INVALID_REQUEST', message: 'Missing baselineDate, currentDate, or coords' });
     }
+    const r = (n, d) => Number(n).toFixed(d);
+    const key = [baselineDate, currentDate, r(coords.lat, 4), r(coords.lng, 4), indicator,
+      bounds ? [bounds.north, bounds.south, bounds.east, bounds.west].map(v => r(v, 3)).join(',') : ''].join('|');
+    const hit = compareCache.get(key);
+    if (hit && Date.now() - hit.at < COMPARE_CACHE_TTL_MS) return res.json(hit.result);
     const result = await getCompareData({ baselineDate, currentDate, coords, bounds, indicator });
+    if (result?.status === 'success' || result?.status === 'insufficient_data') {
+      compareCache.set(key, { at: Date.now(), result });
+      if (compareCache.size > 200) compareCache.delete(compareCache.keys().next().value);
+    }
     res.json(result);
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });

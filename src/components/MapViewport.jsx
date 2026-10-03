@@ -12,6 +12,7 @@ export default function MapViewport({
   setHoverCoords,
   markerCoords,
   tileUrl,
+  tileMaxZoom = 20,
   children 
 }) {
   const mapContainer = useRef(null);
@@ -36,6 +37,7 @@ export default function MapViewport({
               type: 'raster',
               tiles: [tileUrl || 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}'],
               tileSize: 256,
+              maxzoom: tileMaxZoom,
               attribution: 'Sentinel-2'
             }
           },
@@ -51,6 +53,7 @@ export default function MapViewport({
         },
         center: center,
         zoom: zoom,
+        maxZoom: 21,
         attributionControl: false
       });
 
@@ -129,7 +132,8 @@ export default function MapViewport({
     map.current.addSource('satellite', {
       type: 'raster',
       tiles: newTiles,
-      tileSize: 256
+      tileSize: 256,
+      maxzoom: tileMaxZoom
     });
     
     map.current.addLayer({
@@ -139,7 +143,7 @@ export default function MapViewport({
       minzoom: 0,
       maxzoom: 22
     });
-  }, [tileUrl]);
+  }, [tileUrl, tileMaxZoom]);
 
   return (
     <div className={`map-container ${displayHoverCoords ? 'crosshair-active' : ''}`} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', zIndex: 1 }}>

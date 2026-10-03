@@ -267,16 +267,49 @@ function buildROI(coords, bounds) {
 }
 
 /**
+ * Landsat Collection 2 L2: QA_PIXEL bits 1=dilated cloud, 3=cloud, 4=shadow.
+ */
+function maskLandsatClouds(image) {
+  const qa = image.select('QA_PIXEL');
+  const mask = qa.bitwiseAnd(1 << 1).eq(0).and(qa.bitwiseAnd(1 << 3).eq(0)).and(qa.bitwiseAnd(1 << 4).eq(0));
+  return image.updateMask(mask);
+}
+
+// Rename Landsat SR bands to Sentinel-2 names (B2 blue, B3 green, B4 red, B8 NIR)
+// and rescale to S2-like reflectance ×10000 so VIS_RGB and analysis work unchanged.
+function landsatToS2Bands(srBands) {
+  return (image) => ee.Image(image.select(srBands, ['B2', 'B3', 'B4', 'B8'])
+    .multiply(0.0000275).add(-0.2).multiply(10000)
+    .copyProperties(image, ['system:time_start']));
+}
+
+const identity = (image) => image;
+const s2DateFromIndex = (index) => index.substring(0, 8);       // 20210115T053211_...
+const landsatDateFromIndex = (index) => index.slice(-8);         // LC08_148044_20130415
+
+// Each descriptor: mask (on raw image), normalize (→ S2 band names/scale).
+const COLLECTIONS = {
+  [CONFIG.COLLECTION_SR]: { id: CONFIG.COLLECTION_SR, isSR: true, sensor: 'Sentinel-2 MSI', cloudProp: 'CLOUDY_PIXEL_PERCENTAGE', mask: maskS2Clouds, normalize: identity, dateFromIndex: s2DateFromIndex, windows: CONFIG.SEARCH_WINDOWS, maskMethod: 'SCL band (Scene Classification Layer)' },
+  [CONFIG.COLLECTION_TOA]: { id: CONFIG.COLLECTION_TOA, isSR: false, sensor: 'Sentinel-2 MSI', cloudProp: 'CLOUDY_PIXEL_PERCENTAGE', mask: maskS2CloudsTOA, normalize: identity, dateFromIndex: s2DateFromIndex, windows: CONFIG.SEARCH_WINDOWS, maskMethod: 'QA60 bitmask' },
+  'LANDSAT/LC08/C02/T1_L2': { id: 'LANDSAT/LC08/C02/T1_L2', isSR: true, sensor: 'Landsat 8 OLI', cloudProp: 'CLOUD_COVER', mask: maskLandsatClouds, normalize: landsatToS2Bands(['SR_B2', 'SR_B3', 'SR_B4', 'SR_B5']), dateFromIndex: landsatDateFromIndex, windows: [0, 8, 16, 32, 48], maskMethod: 'QA_PIXEL bitmask' },
+  'LANDSAT/LE07/C02/T1_L2': { id: 'LANDSAT/LE07/C02/T1_L2', isSR: true, sensor: 'Landsat 7 ETM+', cloudProp: 'CLOUD_COVER', mask: maskLandsatClouds, normalize: landsatToS2Bands(['SR_B1', 'SR_B2', 'SR_B3', 'SR_B4']), dateFromIndex: landsatDateFromIndex, windows: [0, 8, 16, 32, 48], maskMethod: 'QA_PIXEL bitmask' },
+};
+
+/**
  * Determine which collection to use based on date.
- * S2_SR_HARMONIZED is available from ~2019-01-28 onward.
- * Before that, use S2_HARMONIZED (TOA).
+ * S2_SR_HARMONIZED from ~2019-01-28, S2_HARMONIZED (TOA) from mid-2015,
+ * Landsat 8 from 2013-04, Landsat 7 before that (timeline reaches back 15 years).
  */
 function getCollectionForDate(date) {
-  const srStart = new Date('2019-01-28');
-  if (date >= srStart) {
-    return { id: CONFIG.COLLECTION_SR, isSR: true };
-  }
-  return { id: CONFIG.COLLECTION_TOA, isSR: false };
+  if (date >= new Date('2019-01-28')) return COLLECTIONS[CONFIG.COLLECTION_SR];
+  if (date >= new Date('2015-12-01')) return COLLECTIONS[CONFIG.COLLECTION_TOA];
+  if (date >= new Date('2013-04-15')) return COLLECTIONS['LANDSAT/LC08/C02/T1_L2'];
+  return COLLECTIONS['LANDSAT/LE07/C02/T1_L2'];
+}
+
+// Raw image → cloud-masked image with S2 band names.
+function prepareImage(image, collectionInfo) {
+  return collectionInfo.normalize(collectionInfo.mask(image));
 }
 
 // ─── Progressive Image Search ────────────────────────────────────
@@ -288,17 +321,15 @@ async function findBestImage(requestedDateStr, roi, excludeImageId) {
   }
 
   const collectionInfo = getCollectionForDate(reqDate);
-  const maskFn = collectionInfo.isSR ? maskS2Clouds : maskS2CloudsTOA;
-
-  for (const windowDays of CONFIG.SEARCH_WINDOWS) {
+  for (const windowDays of collectionInfo.windows) {
     const startDate = new Date(reqDate.getTime() - windowDays * 86400000);
     const endDate = new Date(reqDate.getTime() + windowDays * 86400000 + 86400000); // +1 day inclusive
 
     const col = ee.ImageCollection(collectionInfo.id)
       .filterBounds(roi)
       .filterDate(toISODate(startDate), toISODate(endDate))
-      .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', CONFIG.MAX_CLOUD_PERCENTAGE))
-      .sort('CLOUDY_PIXEL_PERCENTAGE');
+      .filter(ee.Filter.lt(collectionInfo.cloudProp, CONFIG.MAX_CLOUD_PERCENTAGE))
+      .sort(collectionInfo.cloudProp);
 
     // Get candidate list
     const candidates = await new Promise((resolve, reject) => {
@@ -316,11 +347,12 @@ async function findBestImage(requestedDateStr, roi, excludeImageId) {
       if (excludeImageId && fullId === excludeImageId) continue;
 
       const img = ee.Image(fullId);
-      const masked = maskFn(img);
+      const unmasked = collectionInfo.normalize(img);
+      const masked = prepareImage(img, collectionInfo);
 
       // Calculate valid pixel percentage within ROI
       const stats = await new Promise((resolve, reject) => {
-        const totalPixels = img.select('B4').reduceRegion({
+        const totalPixels = unmasked.select('B4').reduceRegion({
           reducer: ee.Reducer.count(),
           geometry: roi,
           scale: CONFIG.REDUCE_SCALE,
@@ -347,7 +379,7 @@ async function findBestImage(requestedDateStr, roi, excludeImageId) {
       if (validPct < CONFIG.MIN_VALID_PIXEL_PCT) continue;
 
       // Extract actual date from system:index (format: YYYYMMDDTHHMMSS_...)
-      const actualDateStr = candidateId.substring(0, 8);
+      const actualDateStr = collectionInfo.dateFromIndex(candidateId);
       const actualDate = parseDate(
         `${actualDateStr.substring(0, 4)}-${actualDateStr.substring(4, 6)}-${actualDateStr.substring(6, 8)}`
       );
@@ -355,7 +387,7 @@ async function findBestImage(requestedDateStr, roi, excludeImageId) {
 
       // Get cloud metadata
       const cloudPct = await new Promise((resolve, reject) => {
-        img.get('CLOUDY_PIXEL_PERCENTAGE').evaluate((val, error) => {
+        img.get(collectionInfo.cloudProp).evaluate((val, error) => {
           if (error) resolve(null);
           else resolve(val);
         });
@@ -371,6 +403,7 @@ async function findBestImage(requestedDateStr, roi, excludeImageId) {
         cloudPercentage: cloudPct != null ? Math.round(cloudPct * 100) / 100 : null,
         collection: collectionInfo.id,
         isSR: collectionInfo.isSR,
+        sensor: collectionInfo.sensor,
         selectionReason: offsetDays === 0
           ? 'Exact date match with sufficient valid pixels.'
           : `Closest usable observation (±${windowDays}d window) with ${validPct.toFixed(1)}% valid pixels.`
@@ -380,7 +413,7 @@ async function findBestImage(requestedDateStr, roi, excludeImageId) {
 
   return {
     found: false,
-    reason: 'No usable Sentinel-2 observation found within ±30 day search window.'
+    reason: `No usable ${collectionInfo.sensor} observation found within ±${collectionInfo.windows[collectionInfo.windows.length - 1]} day search window.`
   };
 }
 
@@ -457,35 +490,33 @@ export async function getCompareData(params) {
     }
 
     // 5. Prepare masked images for ANALYSIS (single best image, cloud-masked)
-    const maskFnB = baselineResult.isSR ? maskS2Clouds : maskS2CloudsTOA;
-    const maskFnC = currentResult.isSR ? maskS2Clouds : maskS2CloudsTOA;
-    const bImg = maskFnB(ee.Image(baselineResult.imageId));
-    const cImg = maskFnC(ee.Image(currentResult.imageId));
+    const bImg = prepareImage(ee.Image(baselineResult.imageId), COLLECTIONS[baselineResult.collection]);
+    const cImg = prepareImage(ee.Image(currentResult.imageId), COLLECTIONS[currentResult.collection]);
 
     // 6. Generate RGB tile URLs using MEDIAN COMPOSITES (cloud-free, no black holes)
     //    We composite over a 3-month window around each date for clean visualization.
     log('Generating cloud-free composite tiles...');
 
-    const buildComposite = (dateStr, collectionId, isSR) => {
+    const buildComposite = (dateStr, collectionId) => {
+      const info = COLLECTIONS[collectionId];
       const centerDate = parseDate(dateStr.includes('-') ? dateStr :
         `${dateStr.substring(0,4)}-${dateStr.substring(4,6)}-${dateStr.substring(6,8)}`);
       // ±20 days window — fast enough, still gets multiple scenes for clean median
       const start = new Date(centerDate.getTime() - 20 * 86400000);
       const end   = new Date(centerDate.getTime() + 20 * 86400000);
-      const mFn = isSR ? maskS2Clouds : maskS2CloudsTOA;
 
       return ee.ImageCollection(collectionId)
         .filterBounds(roi)
         .filterDate(toISODate(start), toISODate(end))
-        .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 60)) // wider net → more scenes → better composite
-        .map(mFn)
+        .filter(ee.Filter.lt(info.cloudProp, 60)) // wider net → more scenes → better composite
+        .map(img => prepareImage(img, info))
         .median();
         // NOTE: NO .clip(roi) here — clipping to the circular buffer causes the round map shape.
         // The tile URL is global; the browser viewport naturally crops it.
     };
 
-    const bComposite = buildComposite(baselineResult.actualDate, baselineResult.collection, baselineResult.isSR);
-    const cComposite = buildComposite(currentResult.actualDate, currentResult.collection, currentResult.isSR);
+    const bComposite = buildComposite(baselineResult.actualDate, baselineResult.collection);
+    const cComposite = buildComposite(currentResult.actualDate, currentResult.collection);
 
     const [bTile, cTile] = await Promise.all([
       new Promise((resolve, reject) => {
@@ -713,6 +744,7 @@ export async function getCompareData(params) {
         validPixelPercentage: baselineResult.validPixelPercentage,
         tileUrl: bTile,
         dataset: baselineResult.collection,
+        sensor: baselineResult.sensor,
         selectionReason: baselineResult.selectionReason
       },
 
@@ -726,6 +758,7 @@ export async function getCompareData(params) {
         validPixelPercentage: currentResult.validPixelPercentage,
         tileUrl: cTile,
         dataset: currentResult.collection,
+        sensor: currentResult.sensor,
         selectionReason: currentResult.selectionReason
       },
 
@@ -739,7 +772,7 @@ export async function getCompareData(params) {
       quality: {
         baselineValidPixels: baselineResult.validPixelPercentage,
         currentValidPixels: currentResult.validPixelPercentage,
-        cloudMaskMethod: baselineResult.isSR ? 'SCL band (Scene Classification Layer)' : 'QA60 bitmask',
+        cloudMaskMethod: COLLECTIONS[baselineResult.collection].maskMethod,
         warnings: []
       },
 
