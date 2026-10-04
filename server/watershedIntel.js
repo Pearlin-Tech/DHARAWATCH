@@ -251,7 +251,7 @@ export async function getMedia(ctx) {
 // ─── AI brief (server-side only; key never leaves the server) ─────
 /** AI_MODEL wins; otherwise ask the provider which Flash models this key can call (cached 1h). */
 let modelCache = null;
-async function pickModels(apiKey) {
+export async function pickModels(apiKey) {
   if (process.env.AI_MODEL) return [process.env.AI_MODEL];
   if (modelCache && Date.now() - modelCache.t < 3600000) return modelCache.v;
   const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': apiKey }, signal: AbortSignal.timeout(15000) });
@@ -267,10 +267,10 @@ async function pickModels(apiKey) {
 }
 const BRIEF_SECTIONS = ['executiveSummary', 'currentEarthObservation', 'hydrology', 'vegetationMoisture', 'temporalChange', 'interventions', 'fieldEvidence', 'dataLimitations'];
 
-function numbersIn(text) {
+export function numbersIn(text) {
   return (String(text).replace(/(\d),(\d{3})/g, '$1$2').match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
 }
-function allowedNumbers(facts) {
+export function allowedNumbers(facts) {
   const set = new Set();
   const add = (n) => { for (const d of [0, 1, 2, 3]) set.add(Number(n.toFixed(d))); };
   const walk = (v) => {
@@ -283,6 +283,45 @@ function allowedNumbers(facts) {
   };
   walk(facts);
   return set;
+}
+
+/**
+ * One server-side Gemini call that must return JSON. Picks a model this key can use (retired models are
+ * skipped), tries up to 3 models with one retry each on 429/503. `image` = { mimeType, base64 } for vision.
+ * Returns { json, model } or { error: { status, reason, model? } }.
+ */
+export async function callGeminiJSON({ prompt, image = null, timeoutMs = 60000 }) {
+  const apiKey = process.env.AI_API_KEY;
+  if (!apiKey) return { error: { status: 'UNAVAILABLE', reason: 'AI_API_KEY is not configured on the server.' } };
+  let models;
+  try { models = await pickModels(apiKey); } catch (e) { return { error: { status: 'ERROR', reason: `Could not list AI models: ${e.message}` } }; }
+  const parts = image ? [{ inline_data: { mime_type: image.mimeType, data: image.base64 } }, { text: prompt }] : [{ text: prompt }];
+  let lastErr = null;
+  for (const m of models.slice(0, 3)) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+          body: JSON.stringify({ contents: [{ parts }], generationConfig: { temperature: 0.1, responseMimeType: 'application/json' } }),
+          signal: AbortSignal.timeout(timeoutMs)
+        });
+        const body = await r.json().catch(() => null);
+        if (!r.ok) {
+          lastErr = { status: 'ERROR', reason: `AI provider returned HTTP ${r.status} for ${m}: ${body?.error?.message?.slice(0, 160) || 'no detail'}`, model: m };
+          if (r.status === 429 || r.status === 503) { await new Promise(res => setTimeout(res, 2500)); continue; }
+          break;
+        }
+        const text = body?.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
+        let json = null;
+        try { json = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] || 'null'); } catch (_) { /* invalid JSON */ }
+        return { json, model: m };
+      } catch (e) {
+        lastErr = { status: /timeout|abort/i.test(e.message) ? 'TIMEOUT' : 'ERROR', reason: e.message, model: m };
+      }
+    }
+  }
+  return { error: lastErr || { status: 'ERROR', reason: 'No AI model responded.' } };
 }
 
 export async function getBrief({ input, ctx, store }) {
@@ -321,35 +360,8 @@ Return JSON with string fields: ${BRIEF_SECTIONS.join(', ')}. Each field 1-4 sen
 
 FACTS:
 ${JSON.stringify(facts)}`;
-  let models;
-  try { models = await pickModels(apiKey); } catch (e) { return { status: 'ERROR', reason: `Could not list AI models: ${e.message}` }; }
-  // try up to 3 models, one retry each on transient overload (429/503)
-  let json = null, model = null, lastErr = null;
-  outer: for (const m of models.slice(0, 3)) {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.1, responseMimeType: 'application/json' } }),
-          signal: AbortSignal.timeout(60000)
-        });
-        const body = await r.json().catch(() => null);
-        if (!r.ok) {
-          lastErr = { status: 'ERROR', reason: `AI provider returned HTTP ${r.status} for ${m}: ${body?.error?.message?.slice(0, 160) || 'no detail'}`, model: m };
-          if (r.status === 429 || r.status === 503) { await new Promise(res => setTimeout(res, 2500)); continue; }
-          continue outer;
-        }
-        const text = body?.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
-        json = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] || 'null');
-        model = m;
-        break outer;
-      } catch (e) {
-        lastErr = { status: /timeout|abort/i.test(e.message) ? 'TIMEOUT' : 'ERROR', reason: e.message, model: m };
-      }
-    }
-  }
-  if (!model) return lastErr || { status: 'ERROR', reason: 'No AI model responded.' };
+  const { json, model, error } = await callGeminiJSON({ prompt });
+  if (!model) return error;
   if (!json) return { status: 'ERROR', reason: 'AI response was not valid JSON.', model };
   // Anti-hallucination gate: every number in the brief must exist in the supplied facts.
   const allowed = allowedNumbers(facts);

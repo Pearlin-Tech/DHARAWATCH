@@ -21,13 +21,12 @@ async function fieldApi(path, opts = {}) {
   return json.data;
 }
 
-async function uploadPhoto(file, missionId, stopId, watershedId, watershedName) {
+async function uploadPhoto(file, watershedId, watershedName, interventionId) {
   const fd = new FormData();
   fd.append('photo', file);
-  if (missionId) fd.append('missionId', missionId);
-  if (stopId) fd.append('stopId', stopId);
   if (watershedId) fd.append('watershedId', watershedId);
   if (watershedName) fd.append('watershedName', watershedName);
+  if (interventionId) fd.append('interventionId', interventionId);
   const res = await fetch(`${API}/field/upload`, { method: 'POST', body: fd });
   const json = await res.json();
   if (!json.success) throw new Error(json.error?.message || 'Upload failed');
@@ -90,7 +89,7 @@ export default function Field() {
   const { loaded: mapsLoaded, error: mapsError } = useGoogleMaps(googleMapsApiKey);
 
   const { selectedFeature } = useGlobalContext();
-  const { setCurrentObservation, setCurrentWatershed, setCurrentMission } = useAppContext();
+  const { setCurrentObservation, setCurrentWatershed } = useAppContext();
 
   // ─ Core state ─
   const [obs, setObs] = useState(null);
@@ -107,8 +106,6 @@ export default function Field() {
         location: obs.location,
         watershedId: obs.watershedId,
         watershedName: obs.watershedName,
-        missionId: obs.missionId,
-        stopId: obs.stopId,
         evidenceId: obs.evidenceId
       });
       if (obs.watershedId) {
@@ -118,15 +115,8 @@ export default function Field() {
           type: 'OBSERVATION_WATERSHED'
         });
       }
-      if (obs.missionId) {
-        setCurrentMission({
-          id: obs.missionId,
-          name: obs.missionId,
-          type: 'OBSERVATION_MISSION'
-        });
-      }
     }
-  }, [obs, setCurrentObservation, setCurrentWatershed, setCurrentMission]);
+  }, [obs, setCurrentObservation, setCurrentWatershed]);
 
   // ─ Analysis state ─
   const [analysisState, setAnalysisState] = useState('idle');
@@ -201,11 +191,19 @@ export default function Field() {
 
     map.current = new window.google.maps.Map(mapContainer.current, {
       center,
-      zoom: 5,
+      zoom: navCtx.interventionId ? 16 : navCtx.coordinates ? 11 : 5,
       mapTypeId: 'satellite',
       disableDefaultUI: true,
       zoomControl: true,
     });
+
+    // reference marker for an intervention handed over from Evidence Review
+    if (navCtx.interventionId && navCtx.coordinates) {
+      new window.google.maps.Marker({
+        position: center, map: map.current, title: `Intervention: ${navCtx.interventionName || navCtx.interventionId}`,
+        icon: { path: window.google.maps.SymbolPath.CIRCLE, scale: 8, fillColor: '#f59e0b', fillOpacity: 1, strokeColor: '#ffffff', strokeWeight: 3 }
+      });
+    }
 
     map.current.addListener('click', (e) => {
       if (!showPinToolRef.current) return;
@@ -272,7 +270,7 @@ export default function Field() {
     setPhotoUrl(localUrl);
 
     try {
-      const result = await uploadPhoto(file, navCtx.missionId, navCtx.stopId, navCtx.watershedId, navCtx.watershedName);
+      const result = await uploadPhoto(file, navCtx.watershedId, navCtx.watershedName, navCtx.interventionId);
       setUploadState('done');
       setPhotoUrl(`${API}/field/${result.observationId}/photo`);
 
@@ -474,24 +472,20 @@ export default function Field() {
           </div>
           <div className="fh-right">
             <div>CONSTELLATION: <span>SENTINEL-2 / SENTINEL-1</span></div>
-            {navCtx.missionId && (
-              <div className="fh-operator">
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ color: '#fff', fontWeight: 600 }}>{navCtx.missionId}</div>
-                  <div>LINKED MISSION</div>
-                </div>
-                <Crosshair size={18} color="#9ca3af" />
-              </div>
-            )}
           </div>
         </header>
 
         {/* Status Strip */}
         <div className="field-status-strip">
-          {navCtx.missionId && (
-            <div className="fs-pill active">
-              <span style={{ width: 6, height: 6, background: '#38bdf8', borderRadius: '50%' }}></span>
-              LINKED: {navCtx.missionId}{navCtx.stopId ? ` / STOP ${navCtx.stopId}` : ''}
+          {navCtx.returnTo && (
+            <button className="fs-pill active" style={{ cursor: 'pointer' }} onClick={() => navigate(navCtx.returnTo)}>
+              ← {navCtx.returnLabel || 'BACK'}
+            </button>
+          )}
+          {navCtx.interventionId && (
+            <div className="fs-pill active" title={navCtx.interventionId} style={{ color: '#fbbf24' }}>
+              <span style={{ width: 6, height: 6, background: '#f59e0b', borderRadius: '50%' }}></span>
+              INTERVENTION: {navCtx.interventionName || navCtx.interventionId}
             </div>
           )}
           {navCtx.watershedId && (
@@ -1023,14 +1017,8 @@ export default function Field() {
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
               {obs?.watershedId && (
                 <button className="action-btn secondary" style={{ fontSize: 11 }}
-                  onClick={() => navigate('/watershed', { state: { watershedId: obs.watershedId } })}>
+                  onClick={() => navigate(`/watershed?id=${encodeURIComponent(obs.watershedId)}`)}>
                   VIEW WATERSHED
-                </button>
-              )}
-              {navCtx.missionId && (
-                <button className="action-btn secondary" style={{ fontSize: 11 }}
-                  onClick={() => navigate('/mission', { state: { missionId: navCtx.missionId } })}>
-                  RETURN TO MISSION
                 </button>
               )}
             </div>
@@ -1053,15 +1041,15 @@ export default function Field() {
             <RefreshCcw size={14} /> COMPARE HISTORICAL SATELLITE
           </button>
           <button className="action-btn secondary" disabled={!obs?.watershedId}
-            onClick={() => navigate('/watershed', { state: { watershedId: obs?.watershedId, coordinates: loc } })}>
+            onClick={() => navigate(`/watershed?id=${encodeURIComponent(obs?.watershedId)}${loc ? `&focus=${loc.latitude},${loc.longitude}` : ''}`)}>
             <Layout size={14} /> VIEW IN WATERSHED COMMAND
           </button>
           <div className="action-spacer"></div>
-          {navCtx.missionId && (
+          {navCtx.returnTo && (
             <button className="action-btn secondary"
-              style={{ background: 'rgba(56,189,248,0.1)', borderColor: 'var(--accent-blue)', color: 'var(--accent-blue)' }}
-              onClick={() => navigate('/mission', { state: { missionId: navCtx.missionId } })}>
-              <Save size={14} /> LOG TO {navCtx.missionId}
+              style={obs?.evidenceId ? { background: 'rgba(56,189,248,0.1)', borderColor: 'var(--accent-blue)', color: 'var(--accent-blue)' } : undefined}
+              onClick={() => navigate(navCtx.returnTo)}>
+              <ArrowRight size={14} /> RETURN TO {(navCtx.returnLabel || 'previous page').toUpperCase()}
             </button>
           )}
         </div>

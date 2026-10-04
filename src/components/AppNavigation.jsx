@@ -1,23 +1,32 @@
 import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Map as MapIcon, MessageSquare, Crosshair, FileStack, Settings, Activity, Clock, Eye, ShieldCheck, Layers, MapPin, Navigation } from 'lucide-react';
+import { Search, Map as MapIcon, MessageSquare, Crosshair, FileStack, Settings, Activity, Clock, Eye, ShieldCheck, Layers, MapPin, Navigation, ClipboardCheck } from 'lucide-react';
 import './AppNavigation.css';
+
+// Not working yet — hidden from the rail until they're built out. Remove an id to show it again.
+const HIDDEN_NAV_ITEMS = new Set(['monitor', 'reports']);
 
 export default function AppNavigation() {
   const [isNavExpanded, setIsNavExpanded] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
 
+  // exact section match: '/evidence-review' must not light up '/evidence/…' (and vice versa)
+  const isActive = (path) => {
+    const section = path.split('/')[1];
+    return location.pathname.split('/')[1] === section;
+  };
+
   const navItems = [
     { id: 'explore', icon: MapIcon, label: 'Explore', path: '/explore' },
     { id: 'watershed', icon: Layers, label: 'Watershed', path: '/watershed' },
     { id: 'field', icon: MapPin, label: 'Field', path: '/field' },
-    { id: 'mission', icon: ShieldCheck, label: 'Evidence Review', path: '/mission' },
+    { id: 'evidence-review', icon: ClipboardCheck, label: 'Evidence Review', path: '/evidence-review' },
     { id: 'ask', icon: MessageSquare, label: 'Ask', path: '/ask' },
     { id: 'compare', icon: FileStack, label: 'Compare', path: '/compare' },
     { id: 'monitor', icon: Activity, label: 'Monitor', path: '/watch' },
-    { id: 'evidence', icon: ShieldCheck, label: 'Evidence', path: '/evidence/ev-3841-b' },
+    { id: 'evidence', icon: ShieldCheck, label: 'Evidence', path: '/evidence' },
   ];
 
   return (
@@ -54,13 +63,12 @@ export default function AppNavigation() {
       
       <div className="nav-rail-links">
         {navItems.map((item) => {
-          // Reports is separated in Explore.jsx normally, but here we include it in the loop or footer
-          if (item.id === 'reports') return null;
+          if (HIDDEN_NAV_ITEMS.has(item.id)) return null;
           
           return (
             <button 
               key={item.id}
-              className={`nav-item ${location.pathname.includes(item.path) ? 'active' : ''}`}
+              className={`nav-item ${isActive(item.path) ? 'active' : ''}`}
               onClick={() => navigate(item.path)}
             >
               <div className="nav-icon">
@@ -84,6 +92,7 @@ export default function AppNavigation() {
       </div>
 
       <div className="nav-rail-bottom" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {!HIDDEN_NAV_ITEMS.has('reports') && (
         <button className={`nav-item ${location.pathname.includes('/reports') ? 'active' : ''}`} onClick={() => navigate('/reports')}>
           <div className="nav-icon"><FileStack size={18} /></div>
           <AnimatePresence>
@@ -99,6 +108,7 @@ export default function AppNavigation() {
             )}
           </AnimatePresence>
         </button>
+        )}
         <button className={`nav-item ${location.pathname.includes('/settings') ? 'active' : ''}`} onClick={() => navigate('/settings')}>
           <div className="nav-icon"><Settings size={18} /></div>
           <AnimatePresence>

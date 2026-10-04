@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Crosshair, AlertTriangle, Play, Pause, ChevronLeft, ChevronRight as IconChevronRight, CheckCircle, XCircle, ArrowRight, TrendingUp, TrendingDown, LocateFixed, Loader2 } from 'lucide-react';
 import AppNavigation from '../../components/AppNavigation';
@@ -46,7 +46,14 @@ function distanceMeters(a, b) {
 
 export default function Compare() {
   const routerLocation = useLocation();
-  const initialCoords = routerLocation.state?.coords || { lng: 72.5714, lat: 23.0225 };
+  const navigate = useNavigate();
+  const navIn = routerLocation.state || {};
+  // accepts { coords:{lat,lng} } (Evidence Review / Explore) or { coordinates:{lat,lon} } (Watershed / Field)
+  const handedCoords = navIn.coords || (navIn.coordinates && { lat: navIn.coordinates.lat ?? navIn.coordinates.latitude, lng: navIn.coordinates.lng ?? navIn.coordinates.lon ?? navIn.coordinates.longitude });
+  const initialCoords = handedCoords && Number.isFinite(handedCoords.lat) && Number.isFinite(handedCoords.lng) ? handedCoords : { lng: 72.5714, lat: 23.0225 };
+  const isDate = (d) => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d);
+  const initialBaseline = isDate(navIn.baselineDate) ? navIn.baselineDate : '2021-01-15';
+  const initialCurrent = isDate(navIn.currentDate) ? navIn.currentDate : new Date().toISOString().split('T')[0];
 
   const [map1, setMap1] = useState(null);
   const [map2, setMap2] = useState(null);
@@ -59,13 +66,13 @@ export default function Compare() {
   const [flickerState, setFlickerState] = useState('before');
 
   // Default: baseline ~5 years ago, current = today
-  const [baselineDate, setBaselineDate] = useState('2021-01-15');
-  const [timelineDate, setTimelineDate] = useState(new Date().toISOString().split('T')[0]);
+  const [baselineDate, setBaselineDate] = useState(initialBaseline);
+  const [timelineDate, setTimelineDate] = useState(initialCurrent);
   const [draggingDot, setDraggingDot] = useState(null);
 
   // Committed dates: only update (and trigger API) when user releases the dot
-  const [committedBaseline, setCommittedBaseline] = useState('2021-01-15');
-  const [committedCurrent, setCommittedCurrent] = useState(new Date().toISOString().split('T')[0]);
+  const [committedBaseline, setCommittedBaseline] = useState(initialBaseline);
+  const [committedCurrent, setCommittedCurrent] = useState(initialCurrent);
 
   // Last 15 years. Imagery by era: Landsat 7 (2011–13), Landsat 8 (2013–15), Sentinel-2 (2015+);
   // HD Wayback archives start Feb 2014.
@@ -301,6 +308,17 @@ export default function Compare() {
       {/* TOP BAR */}
       <div className="compare-top-bar glass-panel text-xs font-mono text-gray">
         <div className="flex items-center gap-5">
+          {navIn.returnTo && (
+            <button className="compare-live-btn" onClick={() => navigate(navIn.returnTo)} title={`Back to ${navIn.returnLabel || 'previous page'}`}>
+              <ChevronLeft size={13} /> {navIn.returnLabel || 'Back'}
+            </button>
+          )}
+          {navIn.siteName && (
+            <div className="flex flex-col">
+              <span className="text-[10px] text-gray-dim uppercase mb-0.5">Site</span>
+              <span className="text-white font-bold" title={navIn.siteName}>{navIn.siteName}{navIn.bufferM ? <span className="text-gray-dim font-normal"> · {navIn.bufferM} m area</span> : null}</span>
+            </div>
+          )}
           <div className="flex flex-col">
             <span className="text-[10px] text-gray-dim uppercase mb-0.5">Location</span>
             <span className="text-white flex items-center gap-2">
@@ -358,7 +376,7 @@ export default function Compare() {
       <div className="compare-maps-wrapper" ref={sliderRef} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp}>
         {/* LEFT: BEFORE */}
         <div className="map-layer baseline-layer" style={{ opacity: 1 }}>
-          <MapViewport center={[initialCoords.lng, initialCoords.lat]} zoom={13} onMapLoad={setMap1} hoverCoords={hoverCoords} setHoverCoords={setHoverCoords} markerCoords={markerCoords} onMapClick={setMarkerCoords} tileUrl={leftTileUrl} tileMaxZoom={tileMaxZoom} />
+          <MapViewport center={[initialCoords.lng, initialCoords.lat]} zoom={navIn.siteName ? 16 : 13} onMapLoad={setMap1} hoverCoords={hoverCoords} setHoverCoords={setHoverCoords} markerCoords={markerCoords} onMapClick={setMarkerCoords} tileUrl={leftTileUrl} tileMaxZoom={tileMaxZoom} />
           {mode === 'split' && (
             <div className="layer-label glass-panel">BEFORE — {hdActive ? `HD ${formatDisplayDate(baselineRelease?.date)}` : (apiResult?.baseline?.actualDate || formatDisplayDate(baselineDate))}</div>
           )}
@@ -371,7 +389,7 @@ export default function Compare() {
           pointerEvents: mode === 'split' ? 'auto' : 'none',
           mixBlendMode: mode === 'difference' ? 'screen' : 'normal'
         }}>
-          <MapViewport center={[initialCoords.lng, initialCoords.lat]} zoom={13} onMapLoad={setMap2} tileUrl={rightTileUrl} tileMaxZoom={tileMaxZoom} />
+          <MapViewport center={[initialCoords.lng, initialCoords.lat]} zoom={navIn.siteName ? 16 : 13} onMapLoad={setMap2} tileUrl={rightTileUrl} tileMaxZoom={tileMaxZoom} />
           {mode === 'split' && (
             <div className="layer-label right glass-panel">AFTER — {hdActive ? `HD ${formatDisplayDate(currentRelease?.date)}` : (apiResult?.current?.actualDate || formatDisplayDate(timelineDate))}</div>
           )}

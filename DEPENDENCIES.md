@@ -63,7 +63,7 @@ Copy `.env.example` → `.env.local`.
 | `EARTH_ENGINE_PRIVATE_KEY` | **yes** (or `ee-key.json`) | Earth Engine service account (`\n` newlines) |
 | `AI_API_KEY` | optional | Gemini — AI watershed brief, Ask. Without it: "AI BRIEF UNAVAILABLE", rest works |
 | `AI_MODEL` | optional | Force a Gemini model; default = newest `gemini-*-flash` the key can use |
-| `VITE_GOOGLE_MAPS_API_KEY` | optional | Mission planner / Field (Google Maps) |
+| `VITE_GOOGLE_MAPS_API_KEY` | optional | Field (Google Maps) |
 | `PORT` | optional | Backend port (default 3001) |
 | `API_TARGET` | optional, dev | Vite proxy target (default `http://localhost:3001`) |
 

@@ -16,13 +16,13 @@ import { parseGeoTiffBuffer } from './server/services/geospatial/rasterParser.js
 import { initEE, getCompareData, healthCheck } from './server-gee.js';
 import { resolveWatershedByCoord, searchWatersheds } from './server/watershedService.js';
 import { registerGeoRoutes } from './server/geoRoutes.js';
-import { setStore as setGeoStore, setEEReady, isEEReady, computeLayerTile, computeFingerprint, computeTimeline, ensureSeeds } from './server/geospatial.js';
+import { setStore as setGeoStore, setEEReady, isEEReady, computeLayerTile, computeFingerprint, computeTimeline, ensureSeeds, computeSiteChange, computeSiteTerrain, SITE_BUFFER_DEFAULTS } from './server/geospatial.js';
 import { WATERSHED_LAYERS } from './src/shared/layerRegistry.js';
 import { geocodePlace } from './server/geocoder.js';
 import {
   validateImageFile, storePhoto, extractExif, analyzeImageWithAI,
   resolveWatershedForObservation, getSatelliteContextForLocation,
-  buildObservationRecord, buildEvidenceRecord, generateObsId, getObsDir
+  buildObservationRecord, buildEvidenceRecord, generateObsId, getObsDir, resolveFieldFile
 } from './server/fieldService.js';
 import { getIntelligenceOverview, setDbHelpers } from './server/services/intelligence.js';
 
@@ -60,6 +60,23 @@ if (!fs.existsSync(DB_DIR)) {
 }
 
 const dbPath = path.join(DB_DIR, 'satquery.sqlite');
+
+// Tables reachable through the generic /api/:resource routes. Anything else is a 404 —
+// the resource name is interpolated into SQL, so it must never come from an unchecked URL.
+const GENERIC_TABLES = [
+  'settings', 'users', 'saved_locations', 'analyses', 'analysis_results',
+  'evidence', 'reports', 'measurements', 'watches',
+  'watch_passes', 'timeline_events', 'exports', 'ai_queries',
+  'raster_attachments', 'compare', 'watersheds', 'field_observations',
+  'evidence_gaps', 'interventions'
+];
+// Mission was retired: its tables are kept so existing data is not lost, but no API exposes them.
+const RETIRED_TABLES = ['missions', 'mission_stops'];
+function unknownResource(req, res) {
+  if (GENERIC_TABLES.includes(req.params.resource)) return false;
+  res.status(404).json({ ok: false, error: { code: 'NOT_FOUND', message: `Unknown API resource "${req.params.resource}". If this is a new feature, restart the API server so it loads the latest routes.` } });
+  return true;
+}
 const db = new sqlite3.Database(dbPath);
 
 // Initialize DB schema
@@ -69,13 +86,7 @@ db.serialize(() => {
     data TEXT
   )`);
 
-  const tables = [
-    'users', 'saved_locations', 'analyses', 'analysis_results',
-    'evidence', 'reports', 'measurements', 'watches',
-    'watch_passes', 'timeline_events', 'exports', 'ai_queries',
-    'raster_attachments', 'compare', 'watersheds', 'field_observations',
-    'evidence_gaps', 'missions', 'interventions', 'mission_stops'
-  ];
+  const tables = [...GENERIC_TABLES.filter((t) => t !== 'settings'), ...RETIRED_TABLES];
 
 
   tables.forEach(table => {
@@ -664,6 +675,7 @@ app.post('/api/field/upload', fieldUpload.single('photo'), async (req, res) => {
       stopId: req.body.stopId || null,
       watershedId: req.body.watershedId || null,
       watershedName: req.body.watershedName || null,
+      interventionId: req.body.interventionId || null,
       hash: stored.hash,
       filePath: stored.origPath,
       thumbPath: stored.thumbPath
@@ -712,7 +724,8 @@ app.post('/api/field/upload', fieldUpload.single('photo'), async (req, res) => {
 });
 
 // GET /api/field/:id
-app.get('/api/field/:id', async (req, res) => {
+app.get('/api/field/:id', async (req, res, next) => {
+  if (req.params.id === 'context') return next(); // /api/field/context is registered later
   try {
     const obs = await getRow('field_observations', req.params.id);
     if (!obs) return fieldError(res, 'NOT_FOUND', 'Observation not found', 404);
@@ -726,8 +739,9 @@ app.get('/api/field/:id', async (req, res) => {
 app.get('/api/field/:id/photo', async (req, res) => {
   try {
     const obs = await getRow('field_observations', req.params.id);
-    if (!obs || !obs.filePath) return res.status(404).send('Not found');
-    res.sendFile(obs.filePath);
+    const file = obs && resolveFieldFile(obs.id, obs.filePath);
+    if (!file) return res.status(404).send('Photo file not found');
+    res.sendFile(file);
   } catch (err) { res.status(500).send(err.message); }
 });
 
@@ -735,8 +749,9 @@ app.get('/api/field/:id/photo', async (req, res) => {
 app.get('/api/field/:id/thumb', async (req, res) => {
   try {
     const obs = await getRow('field_observations', req.params.id);
-    if (!obs || !obs.thumbPath) return res.status(404).send('Not found');
-    res.sendFile(obs.thumbPath);
+    const file = obs && resolveFieldFile(obs.id, obs.thumbPath);
+    if (!file) return res.status(404).send('Thumbnail not found');
+    res.sendFile(file);
   } catch (err) { res.status(500).send(err.message); }
 });
 
@@ -746,11 +761,12 @@ app.post('/api/field/:id/analyze', async (req, res) => {
     const obs = await getRow('field_observations', req.params.id);
     if (!obs) return fieldError(res, 'NOT_FOUND', 'Observation not found', 404);
 
-    if (!obs.filePath || !fs.existsSync(obs.filePath)) {
+    const photoFile = resolveFieldFile(obs.id, obs.filePath);
+    if (!photoFile) {
       return fieldError(res, 'FILE_MISSING', 'Photo file not found on server');
     }
 
-    const buffer = fs.readFileSync(obs.filePath);
+    const buffer = fs.readFileSync(photoFile);
     const mimeType = 'image/jpeg';
     const result = await analyzeImageWithAI(buffer, mimeType, obs.hash);
 
@@ -832,7 +848,7 @@ app.patch('/api/field/:id', async (req, res) => {
     const obs = await getRow('field_observations', req.params.id);
     if (!obs) return fieldError(res, 'NOT_FOUND', 'Observation not found', 404);
 
-    const allowedFields = ['themes', 'condition', 'synthesis', 'notes', 'missionId', 'stopId', 'watershedId'];
+    const allowedFields = ['themes', 'condition', 'synthesis', 'notes', 'missionId', 'stopId', 'watershedId', 'interventionId'];
     const updates = {};
     for (const f of allowedFields) {
       if (req.body[f] !== undefined) updates[f] = req.body[f];
@@ -965,7 +981,7 @@ app.get('/api/field', async (req, res) => {
     const light = rows.map(o => ({
       id: o.id, status: o.status, location: o.location, captureTime: o.captureTime,
       thumbUrl: `/api/field/${o.id}/thumb`, themes: o.themes, condition: o.condition,
-      createdAt: o.createdAt, missionId: o.missionId, watershedId: o.watershedId
+      createdAt: o.createdAt, missionId: o.missionId, watershedId: o.watershedId, interventionId: o.interventionId || null
     }));
     fieldOk(res, light);
   } catch (err) {
@@ -1322,7 +1338,7 @@ app.patch('/api/interventions/:id', async (req, res) => {
     const existing = await getRow('interventions', id);
     if (!existing) return wsError(res, 'NOT_FOUND', 'Intervention not found', 404);
 
-    const allowedFields = ['type', 'name', 'coordinates', 'geometry', 'constructionDate', 'status', 'notes', 'photographs', 'linkedMissionId', 'linkedObservationId'];
+    const allowedFields = ['type', 'name', 'coordinates', 'geometry', 'constructionDate', 'status', 'notes', 'photographs', 'linkedMissionId', 'linkedObservationId', 'evidenceReview'];
     const updates = {};
     for (const f of allowedFields) {
       if (req.body[f] !== undefined) updates[f] = req.body[f];
@@ -1406,369 +1422,156 @@ app.post('/api/compare', async (req, res) => {
 });
 
 // =========================================================
-// MISSION API
+// INTERVENTION EVIDENCE REVIEW API
+// One intervention record (interventions table) + its field observations + live Earth Engine
+// analysis of an explicit footprint. No stored/synthetic analytical values.
 // =========================================================
 
-app.get('/api/mission/watersheds/search', async (req, res) => {
-  try {
-    const { searchMissionWatersheds } = await import('./server/missionService.js');
-    const results = await searchMissionWatersheds(req.query.q);
-    res.json(results);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+const toRad = (d) => d * Math.PI / 180;
+function distanceM(a, b) {
+  const dLat = toRad(b.lat - a.lat), dLng = toRad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * 6371000 * Math.asin(Math.sqrt(h));
+}
+const REVIEW_NEARBY_M = 1000;
 
-app.get('/api/mission/origins/search', async (req, res) => {
-  try {
-    const { searchOrigins } = await import('./server/missionService.js');
-    const results = await searchOrigins(req.query.q);
-    res.json(results);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+function reviewOk(res, data) { res.json({ ok: true, ...data }); }
+function reviewErr(res, err, status) {
+  const code = err.code || 'ANALYSIS_FAILED';
+  const http = status || err.status || (code === 'NOT_FOUND' ? 404 : code === 'INVALID_INPUT' ? 400 : 500);
+  res.status(http).json({ ok: false, error: { code: /timed out/i.test(err.message) ? 'TIMEOUT' : code, message: err.message } });
+}
 
-app.get('/api/mission/origins/resolve', async (req, res) => {
-  try {
-    const { resolveOriginDetails } = await import('./server/missionService.js');
-    const result = await resolveOriginDetails(req.query.placeId);
-    if (!result) return res.status(404).json({ error: 'Could not resolve place' });
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+async function loadIntervention(id) {
+  const iv = await getRow('interventions', id);
+  if (!iv) { const e = new Error('Intervention not found'); e.code = 'NOT_FOUND'; throw e; }
+  const lat = Number(iv.coordinates?.lat), lng = Number(iv.coordinates?.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) { const e = new Error('Intervention has no valid coordinates'); e.code = 'INVALID_INPUT'; throw e; }
+  return { iv, lat, lng };
+}
+function reviewBuffer(iv, raw) {
+  const n = Number(raw);
+  if (Number.isFinite(n) && n >= 10 && n <= 1000) return n;
+  return SITE_BUFFER_DEFAULTS[iv.type] || 50;
+}
 
-
-app.post('/api/mission/generate', async (req, res) => {
-  try {
-    const { targetId, targetName, targetLat, targetLon, origin, constraints } = req.body;
-    const { resolveOriginDetails, generateMissionPlan } = await import('./server/missionService.js');
-
-    const targetWatershed = {
-      id: targetId,
-      name: targetName,
-      lat: targetLat,
-      lon: targetLon
-    };
-
-    let originGeo = null;
-    if (origin.type === 'SEARCH_RESULT' && origin.id) {
-      originGeo = await resolveOriginDetails(origin.id);
-    } else {
-      originGeo = origin;
-    }
-
-    if (!originGeo || !originGeo.lat || !originGeo.lng) {
-      return res.status(400).json({ error: 'Origin coordinates could not be resolved.' });
-    }
-
-    const mission = await generateMissionPlan(targetWatershed, originGeo, constraints);
-
-    // Save generated mission
-    await insertRow('missions', mission.id, mission);
-
-    res.json({ mission });
-  } catch (err) {
-    console.error('[Mission] generate error:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/mission/preview', async (req, res) => {
-  try {
-    const { targetId, targetName, targetLat, targetLon, origin, constraints } = req.body;
-    const { resolveOriginDetails, generateMissionPlan } = await import('./server/missionService.js');
-
-    const targetWatershed = {
-      id: targetId,
-      name: targetName,
-      lat: targetLat,
-      lon: targetLon
-    };
-
-    let originGeo = null;
-    if (origin.type === 'SEARCH_RESULT' && origin.id) {
-      originGeo = await resolveOriginDetails(origin.id);
-    } else {
-      originGeo = origin;
-    }
-
-    if (!originGeo || !originGeo.lat || !originGeo.lng) {
-      return res.status(400).json({ error: 'Origin coordinates could not be resolved.' });
-    }
-
-    const mission = await generateMissionPlan(targetWatershed, originGeo, constraints);
-    // Don't save it
-    mission.status = 'DRAFT';
-
-    res.json({ mission });
-  } catch (err) {
-    console.error('[Mission] preview error:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET /api/missions — list all missions
-app.get('/api/missions', async (req, res) => {
-  try {
-    const { status, watershedId } = req.query;
-    let missions = await getAllRows('missions');
-
-    if (status) {
-      missions = missions.filter(m => m.status === status);
-    }
-    if (watershedId) {
-      missions = missions.filter(m => m.target?.id === watershedId);
-    }
-
-    // Sort by generatedAt descending
-    missions.sort((a, b) => new Date(b.timestamps?.generatedAt || 0) - new Date(a.timestamps?.generatedAt || 0));
-
-    res.json(missions);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET /api/missions/:id — get single mission with stops
-app.get('/api/missions/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const mission = await getRow('missions', id);
-    if (!mission) return res.status(404).json({ error: 'Mission not found' });
-
-    // Fetch mission stops
-    const stops = await getAllRows('mission_stops');
-    mission.stops = stops.filter(s => s.missionId === id).sort((a, b) => a.sequence - b.sequence);
-
-    res.json(mission);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// PATCH /api/missions/:id — update mission
-app.patch('/api/missions/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const mission = await getRow('missions', id);
-    if (!mission) return res.status(404).json({ error: 'Mission not found' });
-
-    const allowedFields = ['status', 'name', 'description', 'priority', 'constraints', 'selectedStops', 'notes'];
-    const updates = {};
-    for (const f of allowedFields) {
-      if (req.body[f] !== undefined) updates[f] = req.body[f];
-    }
-
-    const updated = { ...mission, ...updates, updatedAt: new Date().toISOString() };
-    await updateRow('missions', id, updated);
-    res.json(updated);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET /api/missions/:id/stops — get mission stops
-app.get('/api/missions/:id/stops', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const stops = await getAllRows('mission_stops');
-    const missionStops = stops.filter(s => s.missionId === id).sort((a, b) => a.sequence - b.sequence);
-    res.json(missionStops);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/missions/:id/stops — add mission stop
-app.post('/api/missions/:id/stops', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const mission = await getRow('missions', id);
-    if (!mission) return res.status(404).json({ error: 'Mission not found' });
-
-    const { stopId, title, lat, lng, objective, type, priority, linkedInterventionId, linkedObservationId } = req.body;
-
-    const stop = {
-      id: stopId || `stop-${Date.now()}`,
-      missionId: id,
-      sequence: req.body.sequence || 1,
-      title: title || 'New Stop',
-      lat: lat || mission.target?.center?.lat || 0,
-      lng: lng || mission.target?.center?.lng || 0,
-      objective: objective || '',
-      type: type || 'OBSERVATION',
-      priority: priority || 'MEDIUM',
-      status: 'UPCOMING',
-      linkedInterventionId: linkedInterventionId || null,
-      linkedObservationId: linkedObservationId || null,
-      notes: '',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-
-    await insertRow('mission_stops', stop.id, stop);
-    res.status(201).json(stop);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// PATCH /api/mission-stops/:id — update mission stop
-app.patch('/api/mission-stops/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const stop = await getRow('mission_stops', id);
-    if (!stop) return res.status(404).json({ error: 'Mission stop not found' });
-
-    const allowedFields = ['title', 'lat', 'lng', 'objective', 'type', 'priority', 'status', 'sequence', 'linkedInterventionId', 'linkedObservationId', 'notes'];
-    const updates = {};
-    for (const f of allowedFields) {
-      if (req.body[f] !== undefined) updates[f] = req.body[f];
-    }
-
-    const updated = { ...stop, ...updates, updatedAt: new Date().toISOString() };
-    await updateRow('mission_stops', id, updated);
-    res.json(updated);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// DELETE /api/mission-stops/:id — delete mission stop
-app.delete('/api/mission-stops/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const changes = await deleteRow('mission_stops', id);
-    if (changes === 0) return res.status(404).json({ error: 'Mission stop not found' });
-    res.status(204).send();
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// =========================================================
-// INTERVENTION EVIDENCE REVIEW API (SIH26015 Supporting Feature)
-// =========================================================
-
-// GET /api/intervention-review/watersheds — list watersheds
-app.get('/api/intervention-review/watersheds', async (req, res) => {
-  try {
-    const { getWatershedList } = await import('./server/interventionReviewEngine.js');
-    const list = getWatershedList();
-    res.json({ success: true, watersheds: list });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET /api/intervention-review/interventions — list interventions for watershed
-app.get('/api/intervention-review/interventions', async (req, res) => {
-  try {
-    const { watershedId } = req.query;
-    if (!watershedId) return res.status(400).json({ error: 'watershedId required' });
-    const { getInterventionsForWatershed, calculateEvidenceStatus } = await import('./server/interventionReviewEngine.js');
-    const items = getInterventionsForWatershed(watershedId);
-    const mapped = items.map(item => ({
-      id: item.id,
-      name: item.name,
-      type: item.type,
-      village: item.village,
-      district: item.district,
-      lat: item.lat,
-      lng: item.lng,
-      status: item.status,
-      photoCount: (item.fieldPhotos || []).length,
-      latestPhotoDate: (item.fieldPhotos && item.fieldPhotos.length > 0) ? item.fieldPhotos[0].date : null,
-      evidenceStatus: calculateEvidenceStatus(item).status,
-      isReviewed: !!item.isReviewed
-    }));
-    res.json({ success: true, interventions: mapped });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET /api/intervention-review/detail/:id — full multi-source evidence package
-app.get('/api/intervention-review/detail/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { getInterventionDetail } = await import('./server/interventionReviewEngine.js');
-    const detail = getInterventionDetail(id);
-    if (!detail) return res.status(404).json({ error: 'Intervention not found' });
-    res.json({ success: true, intervention: detail });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/intervention-review/add-photo — add geotagged field photo evidence
-app.post('/api/intervention-review/add-photo', async (req, res) => {
-  try {
-    const { interventionId, title, url, notes, photographer, type, lat, lng } = req.body;
-    if (!interventionId) return res.status(400).json({ error: 'interventionId required' });
-
-    const { REVIEW_INTERVENTIONS, calculateEvidenceStatus, buildStructuredAssessment } = await import('./server/interventionReviewEngine.js');
-    const target = REVIEW_INTERVENTIONS.find(i => i.id === interventionId);
-
-    const newPhoto = {
-      id: `fp-${Date.now()}`,
-      title: title || 'Field Ground Inspection',
-      url: url || 'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1200&q=80',
-      thumbnail: url || 'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=400&q=80',
-      date: new Date().toISOString().split('T')[0],
-      lat: parseFloat(lat) || target?.lat || 21.8294,
-      lng: parseFloat(lng) || target?.lng || 73.7351,
-      accuracyMeters: 3.5,
-      photographer: photographer || 'Field Officer',
-      type: type || 'Verification Audit',
-      notes: notes || 'Geo-tagged field observation recorded.',
-      device: 'Mobile GPS Tagged',
-      exif: { iso: 100, focalLength: '26mm', shutter: '1/500s', direction: 'North' }
-    };
-
-    if (target) {
-      if (!target.fieldPhotos) target.fieldPhotos = [];
-      target.fieldPhotos.unshift(newPhoto);
-    }
-
-    const updatedDetail = target ? {
-      ...target,
-      evidenceStatus: calculateEvidenceStatus(target).status,
-      evidenceStatusInfo: calculateEvidenceStatus(target),
-      assessment: buildStructuredAssessment(target, calculateEvidenceStatus(target))
-    } : null;
-
-    res.json({ success: true, photo: newPhoto, intervention: updatedDetail });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/intervention-review/toggle-review — toggle review watchlist flag
-app.post('/api/intervention-review/toggle-review', async (req, res) => {
-  try {
-    const { interventionId, isReviewed, notes } = req.body;
-    if (!interventionId) return res.status(400).json({ error: 'interventionId required' });
-
-    const { REVIEW_INTERVENTIONS } = await import('./server/interventionReviewEngine.js');
-    const target = REVIEW_INTERVENTIONS.find(i => i.id === interventionId);
-    if (target) {
-      target.isReviewed = isReviewed !== undefined ? isReviewed : !target.isReviewed;
-      target.reviewStatus = target.isReviewed ? 'REVIEWED' : 'PENDING_REVIEW';
-      if (notes) target.reviewNotes = notes;
-    }
-
-    res.json({
-      success: true,
-      isReviewed: target ? target.isReviewed : isReviewed,
-      message: target?.isReviewed ? 'Intervention marked as Reviewed.' : 'Intervention added to review list.'
+/** Field observations explicitly linked to the intervention, plus located observations within 1 km. */
+async function fieldEvidenceFor(iv, lat, lng) {
+  const rows = await getAllRows('field_observations');
+  const photos = [];
+  for (const o of rows) {
+    const loc = o.location?.latitude != null ? { lat: Number(o.location.latitude), lng: Number(o.location.longitude) } : null;
+    const d = loc ? Math.round(distanceM({ lat, lng }, loc)) : null;
+    const linked = o.interventionId === iv.id;
+    if (!linked && !(d != null && d <= REVIEW_NEARBY_M)) continue;
+    const ai = o.aiAnalysis?.data;
+    photos.push({
+      id: o.id, link: linked ? 'LINKED' : 'NEARBY', distanceM: d,
+      captureTime: o.captureTime || null, createdAt: o.createdAt, location: o.location || null,
+      exif: { status: o.exif?.status || null, captureTime: o.exif?.captureTime || null, camera: o.exif?.camera || null, gps: o.exif?.gps || null },
+      condition: o.condition || null, themes: o.themes || [], notes: o.synthesis || o.notes || '',
+      watershedId: o.watershedId || null, missionId: o.missionId || null, evidenceId: o.evidenceId || null,
+      photoUrl: `/api/field/${o.id}/photo`, thumbUrl: `/api/field/${o.id}/thumb`,
+      ai: o.aiAnalysis ? {
+        status: o.aiAnalysis.status, model: ai?._model || null, error: o.aiAnalysis.error || null,
+        fallback: /fallback/i.test(o.aiAnalysis.reason || ''),
+        scene: ai?.scene || null, summary: ai?.observationSummary || null, structures: ai?.structures || [],
+        water: ai?.visibleWater || null, vegetation: ai?.vegetationCondition || null, land: ai?.landCondition || null,
+        hazards: ai?.hazards || null, interventionIndicators: ai?.interventionIndicators || null,
+        uncertainty: ai?.uncertainty || null, needsHumanReview: ai?.needsHumanReview ?? null
+      } : null
     });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
   }
+  photos.sort((a, b) => new Date(b.captureTime || b.createdAt) - new Date(a.captureTime || a.createdAt));
+  return { photos, inspections: (iv.inspections || []).slice().sort((a, b) => new Date(b.date) - new Date(a.date)), nearbyRadiusM: REVIEW_NEARBY_M };
+}
+
+// GET /api/evidence-review/:id — intervention + field evidence (fast; no Earth Engine)
+app.get('/api/evidence-review/:id', async (req, res) => {
+  try {
+    const { iv, lat, lng } = await loadIntervention(req.params.id);
+    const field = await fieldEvidenceFor(iv, lat, lng);
+    reviewOk(res, { intervention: iv, field, defaultBufferM: reviewBuffer(iv) });
+  } catch (err) { reviewErr(res, err); }
+});
+
+// POST /api/evidence-review/:id/satellite { baselineDate, currentDate, bufferM }
+app.post('/api/evidence-review/:id/satellite', async (req, res) => {
+  try {
+    const { iv, lat, lng } = await loadIntervention(req.params.id);
+    if (!isEEReady()) return reviewErr(res, Object.assign(new Error('Earth Engine is not initialized on the server.'), { code: 'EE_UNAVAILABLE' }), 503);
+    const result = await computeSiteChange({ lat, lng, geometry: iv.geometry, bufferM: reviewBuffer(iv, req.body?.bufferM), baselineDate: req.body?.baselineDate, currentDate: req.body?.currentDate });
+    reviewOk(res, { satellite: result });
+  } catch (err) { reviewErr(res, err); }
+});
+
+// GET /api/evidence-review/:id/terrain?bufferM=
+app.get('/api/evidence-review/:id/terrain', async (req, res) => {
+  try {
+    const { iv, lat, lng } = await loadIntervention(req.params.id);
+    if (!isEEReady()) return reviewErr(res, Object.assign(new Error('Earth Engine is not initialized on the server.'), { code: 'EE_UNAVAILABLE' }), 503);
+    const result = await computeSiteTerrain({ lat, lng, geometry: iv.geometry, bufferM: reviewBuffer(iv, req.query.bufferM) });
+    reviewOk(res, { terrain: result });
+  } catch (err) { reviewErr(res, err); }
+});
+
+// POST /api/evidence-review/:id/brief { baselineDate, currentDate, bufferM }
+// The server rebuilds the facts itself (cached EE results + DB) — the AI never sees client-supplied numbers.
+app.post('/api/evidence-review/:id/brief', async (req, res) => {
+  try {
+    const { iv, lat, lng } = await loadIntervention(req.params.id);
+    const bufferM = reviewBuffer(iv, req.body?.bufferM);
+    const { baselineDate, currentDate } = req.body || {};
+    const settleP = (p) => p.then((v) => ({ status: 'AVAILABLE', data: v }), (e) => ({ status: 'ERROR', error: e.message }));
+    const [field, sat, ter] = await Promise.all([
+      fieldEvidenceFor(iv, lat, lng),
+      baselineDate && currentDate && isEEReady() ? settleP(computeSiteChange({ lat, lng, geometry: iv.geometry, bufferM, baselineDate, currentDate })) : Promise.resolve({ status: 'IDLE' }),
+      isEEReady() ? settleP(computeSiteTerrain({ lat, lng, geometry: iv.geometry, bufferM })) : Promise.resolve({ status: 'ERROR', error: 'Earth Engine unavailable' })
+    ]);
+    const { evaluateEvidence } = await import('./src/shared/evidenceStatus.js');
+    const ev = evaluateEvidence({ intervention: iv, field: { status: 'AVAILABLE', ...field }, satellite: sat, terrain: ter });
+    const s = sat.data, t = ter.data;
+    const facts = {
+      intervention: { name: iv.name, type: iv.type, recordedStatus: iv.status, constructionDate: iv.constructionDate?.slice(0, 10) || 'UNKNOWN', notes: iv.notes || null },
+      watershedId: iv.watershedId,
+      fieldEvidence: {
+        photos: ev.field.photoCount, explicitlyLinkedPhotos: ev.field.linkedCount, photosWithExifGps: ev.field.exifGpsCount,
+        inspectionRecords: ev.field.inspectionCount, latestRecordDate: ev.field.latestDate?.slice(0, 10) || 'NONE', latestRecordAgeDays: ev.field.ageDays,
+        latestFieldCondition: ev.field.latestCondition || 'NOT RECORDED',
+        inspectionNotes: field.inspections.slice(0, 3).map((i) => ({ date: i.date?.slice(0, 10), status: i.status, notes: i.notes })),
+        photoAiObservations: field.photos.filter((p) => p.ai?.summary && !p.ai.fallback).slice(0, 3).map((p) => p.ai.summary)
+      },
+      satelliteChange: s?.status === 'AVAILABLE' ? {
+        dataset: s.provenance.dataset, analysisAreaHa: s.analysisArea.areaHa, analysisRadiusM: s.analysisArea.radiusM,
+        baselineScene: s.baseline.acquisitionDate, currentScene: s.current.acquisitionDate,
+        ndvi: s.change.ndvi, ndwi: s.change.ndwi, ndmi: s.change.ndmi, openWaterHa: s.change.waterHa,
+        landCover: s.landCover.transition || 'UNAVAILABLE'
+      } : (s?.status === 'NO_SUITABLE_IMAGE' ? { status: 'NO SUITABLE IMAGE', reason: s.baseline?.reason || s.current?.reason } : 'NOT AVAILABLE'),
+      terrain: t?.status === 'AVAILABLE' ? {
+        elevationMeanM: t.elevation?.mean, slopeMeanDeg: t.slope?.mean, upstreamAreaKm2: t.flowAccumulation?.upstreamAreaKm2,
+        flowSignal: t.flowAccumulation?.level, distanceToMappedRiverM: t.drainage?.distanceM
+      } : 'NOT AVAILABLE',
+      evidenceStatus: { status: ev.label, reasons: ev.reasons, limitations: ev.limitations }
+    };
+    const SECTIONS = ['keyFinding', 'fieldEvidence', 'satelliteObservation', 'terrainContext', 'evidenceQuality', 'limitations', 'recommendedNextAction'];
+    const prompt = `Summarize the supplied verified evidence for one watershed intervention.
+Do not invent values. Do not invent dates. Do not infer causality — never say the intervention caused a change; say what was observed in the analysis area during the period.
+Clearly distinguish observation from interpretation (prefix interpretation with "Interpretation:").
+Mention missing evidence and limitations. If a section has no data, say it is unavailable.
+Do not introduce any number that is not present in the facts.
+Return JSON with string fields: ${SECTIONS.join(', ')}. Each field 1-3 sentences.
+
+FACTS:
+${JSON.stringify(facts)}`;
+    const { callGeminiJSON, allowedNumbers, numbersIn } = await import('./server/watershedIntel.js');
+    const { json, model, error } = await callGeminiJSON({ prompt });
+    if (!model) return reviewOk(res, { brief: { ...error, facts } });
+    if (!json) return reviewOk(res, { brief: { status: 'ERROR', reason: 'AI response was not valid JSON.', model, facts } });
+    const allowed = allowedNumbers(facts);
+    const unverified = [...new Set(SECTIONS.flatMap((k) => numbersIn(json[k] || '')).filter((n) => !allowed.has(n) && !(Number.isInteger(n) && n >= 0 && n <= 12)))];
+    if (unverified.length) return reviewOk(res, { brief: { status: 'REJECTED', reason: `AI output contained numbers not present in the verified data (${unverified.slice(0, 6).join(', ')}); summary withheld.`, model, facts } });
+    reviewOk(res, { brief: { status: 'AVAILABLE', model, sections: Object.fromEntries(SECTIONS.map((k) => [k, typeof json[k] === 'string' ? json[k] : 'Unavailable.'])), facts, generatedAt: new Date().toISOString() } });
+  } catch (err) { reviewErr(res, err); }
 });
 
 // =========================================================
@@ -1917,6 +1720,7 @@ app.get('/api/search', async (req, res) => {
 
 // GET all items for a resource (or the settings object)
 app.get('/api/:resource', async (req, res) => {
+  if (unknownResource(req, res)) return;
   try {
     const { resource } = req.params;
     if (resource === 'settings') {
@@ -1933,6 +1737,7 @@ app.get('/api/:resource', async (req, res) => {
 
 // GET single item by ID
 app.get('/api/:resource/:id', async (req, res) => {
+  if (unknownResource(req, res)) return;
   try {
     const { resource, id } = req.params;
     if (resource === 'settings') {
@@ -1953,6 +1758,7 @@ app.get('/api/:resource/:id', async (req, res) => {
 
 // POST to create a new item (or overwrite settings)
 app.post('/api/:resource', async (req, res) => {
+  if (unknownResource(req, res)) return;
   try {
     const { resource } = req.params;
     if (resource === 'settings') {
@@ -1976,6 +1782,7 @@ app.post('/api/:resource', async (req, res) => {
 
 // PUT to update an item by ID
 app.put('/api/:resource/:id', async (req, res) => {
+  if (unknownResource(req, res)) return;
   try {
     const { resource, id } = req.params;
     if (resource === 'settings') {
@@ -1998,6 +1805,7 @@ app.put('/api/:resource/:id', async (req, res) => {
 
 // DELETE an item by ID
 app.delete('/api/:resource/:id', async (req, res) => {
+  if (unknownResource(req, res)) return;
   try {
     const { resource, id } = req.params;
     if (resource === 'settings') {
@@ -2025,10 +1833,24 @@ app.use((err, req, res, next) => {
 process.on('unhandledRejection', (reason) => console.error('[Process] Unhandled promise rejection:', reason?.stack || reason));
 process.on('uncaughtException', (err) => console.error('[Process] Uncaught exception (server kept alive):', err?.stack || err));
 
+// Older records used slug watershed ids ('ws-narmada') that no page can resolve; the Watershed module,
+// Evidence Review and Field all key on HydroBASINS ids. Re-key them once (idempotent).
+const LEGACY_WATERSHED_IDS = { 'ws-narmada': 'hybas-4050031610' };
+async function migrateLegacyWatershedIds() {
+  for (const table of ['interventions', 'evidence_gaps']) {
+    const rows = await getAllRows(table).catch(() => []);
+    for (const row of rows) {
+      const next = LEGACY_WATERSHED_IDS[row.watershedId];
+      if (next) await updateRow(table, row.id, { ...row, watershedId: next, legacyWatershedId: row.watershedId });
+    }
+  }
+}
+
 if (!process.env.VERCEL && !process.env.NETLIFY) {
   const server = app.listen(PORT, () => {
     console.log(`Local authoritative server running on http://localhost:${PORT} with SQLite backend`);
     ensureSeeds();
+    migrateLegacyWatershedIds().catch(e => console.warn('[Migrate] watershed id migration failed:', e.message));
   });
 
   server.on('error', (err) => {

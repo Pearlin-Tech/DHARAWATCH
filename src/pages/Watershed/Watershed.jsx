@@ -6,7 +6,7 @@ import AppNavigation from '../../components/AppNavigation';
 import { useAppContext } from '../../components/UniversalContextBar';
 import {
   Search, Layers, Target, ArrowRight, Plus, Download, Trash2, MapPin, Pen, Crosshair, X, RefreshCw,
-  Upload, ZoomIn, ZoomOut, Maximize, Save, Eye, MessageSquare, Star
+  Upload, ZoomIn, ZoomOut, Maximize, Save, Eye, MessageSquare, Star, ArrowLeft, ClipboardCheck
 } from 'lucide-react';
 import {
   searchGeo, resolvePoint, intersectGeometry, getContextById, listDemos, listSaved, saveContext, deleteSaved, importGeoJSON,
@@ -133,11 +133,24 @@ export default function Watershed() {
     const m = map.current;
     if (!mapReady || !m) return;
     m.getSource('ws-boundary').setData(ctx ? { type: 'Feature', properties: {}, geometry: ctx.geometry } : { type: 'FeatureCollection', features: [] });
-    if (ctx?.bbox) {
+    // ?focus=lat,lng (e.g. from Evidence Review) centres on that point instead of fitting the whole basin
+    const q = new URLSearchParams(window.location.search);
+    const focus = ctx && q.get('id') === ctx.id ? (q.get('focus') || '').split(',').map(Number) : [];
+    focusMarker.current?.remove();
+    focusMarker.current = null;
+    if (focus.length === 2 && focus.every(Number.isFinite)) {
+      const el = document.createElement('div');
+      el.className = 'ws-focus-marker';
+      el.title = 'Intervention location';
+      focusMarker.current = new maplibregl.Marker({ element: el }).setLngLat([focus[1], focus[0]]).addTo(m);
+      m.flyTo({ center: [focus[1], focus[0]], zoom: 15, duration: 1400 });
+    } else if (ctx?.bbox) {
       const pad = { top: 80, bottom: 260, left: Math.min(420, VW * 0.28), right: Math.min(420, VW * 0.28) };
       m.fitBounds([[ctx.bbox[0], ctx.bbox[1]], [ctx.bbox[2], ctx.bbox[3]]], { padding: pad, duration: 1400, maxZoom: 12 });
     }
-  }, [ctx, mapReady]);
+    if (ctx && q.get('id') === ctx.id && (q.get('intervention') || q.get('panel') === 'interventions')) togglePanel('interventions', true);
+  }, [ctx, mapReady, togglePanel]);
+  const focusMarker = useRef(null);
 
   // ─── activateContext: the ONE way a context becomes active ─────
   const activateContext = useCallback((raw, { history = 'push' } = {}) => {
@@ -407,8 +420,10 @@ export default function Watershed() {
     fingerprint: <FingerprintBody ctx={ctx} res={fp} onShowLayer={(id) => { enableLayer(id); togglePanel('layers', true); }} onOpenDetail={() => togglePanel('detail', true)} />,
     layers: <LayersBody ctx={ctx} layers={layers} onToggle={toggleLayer} onOpacity={setOpacity} onReset={resetLayers} />,
     detail: <DetailBody ctx={ctx} intel={intel} media={media} fp={fp} tl={tl} tli={tli} att={att} ints={ints} field={field} brief={brief} onBrief={runBrief} onSelectId={(id) => openById(id)} />,
-    attention: <AttentionBody ctx={ctx} res={att} onCompare={() => navigate('/compare', { state: navState })} onMission={() => navigate('/mission', { state: navState })} />,
-    interventions: <InterventionsBody ctx={ctx} res={ints} api={interventionApi} onFly={(iv) => iv.coordinates && map.current?.flyTo({ center: [iv.coordinates.lng, iv.coordinates.lat], zoom: 14 })} onField={() => navigate('/field', { state: navState })} onMission={() => navigate('/mission', { state: navState })} />,
+    attention: <AttentionBody ctx={ctx} res={att} onCompare={() => navigate('/compare', { state: navState })} />,
+    interventions: <InterventionsBody ctx={ctx} res={ints} api={interventionApi} focusId={new URLSearchParams(location.search).get('intervention')}
+      onReview={(iv) => navigate(`/evidence-review?watershed=${encodeURIComponent(ctx.id)}&intervention=${encodeURIComponent(iv.id)}`, { state: { returnTo: `/watershed?id=${encodeURIComponent(ctx.id)}`, returnLabel: 'Watershed' } })}
+      onFly={(iv) => iv.coordinates && map.current?.flyTo({ center: [iv.coordinates.lng, iv.coordinates.lat], zoom: 14 })} onField={() => navigate('/field', { state: navState })} />,
     timeline: <TimelineBody ctx={ctx} res={tl} idx={tli} />
   };
   const activeLayerCount = Object.values(layers).filter((l) => l.status === 'ACTIVE').length;
@@ -632,10 +647,11 @@ export default function Watershed() {
       ))}
 
       <div className="ws-action-dock">
+        {location.state?.returnTo && <button className="ws-control-btn primary" onClick={() => navigate(location.state.returnTo)}><ArrowLeft size={13} /> {(location.state.returnLabel || 'BACK').toUpperCase()}</button>}
         <button className="ws-control-btn" onClick={() => navigate('/explore', { state: navState })}><Layers size={13} /> EXPLORE</button>
         <button className="ws-control-btn" onClick={() => navigate('/compare', { state: navState && { ...navState, lat: navState.coordinates?.lat, lon: navState.coordinates?.lon } })}><ArrowRight size={13} /> COMPARE</button>
-        <button className="ws-control-btn primary" onClick={() => navigate('/mission', { state: navState })}><Target size={13} /> PLAN MISSION</button>
         <button className="ws-control-btn" onClick={() => navigate('/field', { state: navState })}><MapPin size={13} /> FIELD</button>
+        <button className="ws-control-btn" disabled={!ctx} onClick={() => navigate(`/evidence-review?watershed=${encodeURIComponent(ctx.id)}`, { state: { returnTo: `/watershed?id=${encodeURIComponent(ctx.id)}`, returnLabel: 'Watershed' } })}><ClipboardCheck size={13} /> EVIDENCE REVIEW</button>
         <button className="ws-control-btn" disabled={!ctx} onClick={() => togglePanel('detail', true)}><Eye size={13} /> DETAILS</button>
         <button className="ws-control-btn" onClick={() => navigate('/ask', { state: navState })}><MessageSquare size={13} /> ASK</button>
       </div>

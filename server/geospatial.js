@@ -873,3 +873,190 @@ export function ensureSeeds() {
 }
 
 export function newCustomId() { return `custom-${crypto.randomBytes(5).toString('hex')}`; }
+
+// ─── Intervention site analysis (Evidence Review) ─────────────────
+// Same Sentinel-2 collection, SCL mask and index formulas as the watershed pipeline above, applied to an
+// explicit analysis footprint (circle of bufferM around the intervention, or its own polygon).
+
+/** Default analysis radius by intervention type — small structures get a tight footprint. */
+export const SITE_BUFFER_DEFAULTS = {
+  'Check Dam': 50, 'Farm Pond': 50, 'Percolation Tank': 100, 'Recharge Structure': 25,
+  'Contour Trench': 100, 'Bund': 50, 'Plantation': 100, 'Drainage Work': 50, 'Other': 50
+};
+const S2_SR_START = '2017-03-28';
+const SITE_WINDOW_DAYS = 45;      // search ± this many days around each requested date
+const SITE_MIN_CLEAR = 0.8;       // share of clear (unmasked) pixels required inside the footprint
+
+function siteFootprint({ lat, lng, bufferM, geometry }) {
+  const point = ee.Geometry.Point([lng, lat]);
+  if (geometry && (geometry.type === 'Polygon' || geometry.type === 'MultiPolygon')) {
+    return { point, aoi: ee.Geometry(geometry), kind: 'polygon' };
+  }
+  return { point, aoi: point.buffer(bufferM), kind: 'circle' };
+}
+
+function thumbUrl(image, params) {
+  return new Promise((resolve) => {
+    try { image.getThumbURL(params, (url, err) => resolve(err ? null : url)); } catch (_) { resolve(null); }
+  });
+}
+
+/** Pick the clearest-over-the-footprint Sentinel-2 scene closest to `date`; never invents a scene. */
+async function siteScene(fp, date) {
+  if (date < S2_SR_START) {
+    return { status: 'NO_SUITABLE_IMAGE', requestedDate: date, reason: `Sentinel-2 SR Harmonized imagery starts ${S2_SR_START}; no scene can exist for this date.` };
+  }
+  const t = new Date(date).getTime();
+  const start = isoDay(new Date(t - SITE_WINDOW_DAYS * 86400000));
+  const end = isoDay(new Date(t + SITE_WINDOW_DAYS * 86400000));
+  const target = ee.Date(date);
+  const col = ee.ImageCollection(S2).filterBounds(fp.aoi).filterDate(start, end)
+    .map((img) => {
+      const clear = maskS2(img).select('B4').mask().reduceRegion({ reducer: ee.Reducer.mean(), geometry: fp.aoi, scale: 10, maxPixels: 1e7 }).get('B4');
+      return img.set({ clear, dayDiff: ee.Number(img.date().difference(target, 'day')).abs() });
+    });
+  const info = await evalEE(ee.Dictionary({
+    total: col.size(),
+    usable: col.filter(ee.Filter.gte('clear', SITE_MIN_CLEAR)).size(),
+    best: ee.Algorithms.If(
+      col.filter(ee.Filter.gte('clear', SITE_MIN_CLEAR)).size().gt(0),
+      ee.Feature(col.filter(ee.Filter.gte('clear', SITE_MIN_CLEAR)).sort('dayDiff').first()).toDictionary(['system:index', 'clear', 'dayDiff', 'CLOUDY_PIXEL_PERCENTAGE']),
+      null
+    )
+  }), 90000);
+  if (!info.best) {
+    return {
+      status: 'NO_SUITABLE_IMAGE', requestedDate: date, window: { start, end }, scenesInWindow: info.total,
+      reason: info.total
+        ? `${info.total} Sentinel-2 scene(s) between ${start} and ${end}, but none had ≥${SITE_MIN_CLEAR * 100}% cloud-free pixels over the analysis area.`
+        : `No Sentinel-2 scenes cover the analysis area between ${start} and ${end}.`
+    };
+  }
+  const id = `${S2}/${info.best['system:index']}`;
+  const acquisitionDate = `${info.best['system:index'].slice(0, 4)}-${info.best['system:index'].slice(4, 6)}-${info.best['system:index'].slice(6, 8)}`;
+  return { status: 'AVAILABLE', requestedDate: date, window: { start, end }, scenesInWindow: info.total, imageId: id, acquisitionDate, offsetDays: Math.round(info.best.dayDiff), sceneCloudPct: round(info.best.CLOUDY_PIXEL_PERCENTAGE, 1), clearPctInArea: round(info.best.clear * 100, 1) };
+}
+
+async function siteSceneStats(fp, scene) {
+  const img = maskS2(ee.Image(scene.imageId));
+  const idx = indexImage(img);
+  const water = idx.select('ndwi').gt(0).multiply(ee.Image.pixelArea()).rename('waterM2');
+  const vals = await evalEE(idx.addBands(water).reduceRegion({
+    reducer: ee.Reducer.mean().combine(ee.Reducer.sum(), '', true).combine(ee.Reducer.count(), '', true),
+    geometry: fp.aoi, scale: 10, maxPixels: 1e8
+  }), 90000);
+  // thumbnail: true colour around the footprint with the footprint outline burned in
+  const region = fp.aoi.buffer(ee.Number(fp.aoi.area(1)).sqrt().multiply(1.2).max(150)).bounds(1);
+  const outline = ee.Image().byte().paint(ee.FeatureCollection([ee.Feature(fp.aoi)]), 1, 2).visualize({ palette: ['00e5ff'] });
+  const rgb = ee.Image(scene.imageId).visualize({ bands: ['B4', 'B3', 'B2'], min: 0, max: 3000, gamma: 1.2 });
+  const url = await thumbUrl(rgb.blend(outline), { region, dimensions: 512, format: 'png' });
+  return {
+    ndvi: round(vals?.ndvi_mean), ndwi: round(vals?.ndwi_mean), ndmi: round(vals?.ndmi_mean),
+    waterHa: vals?.waterM2_sum != null ? round(vals.waterM2_sum / 1e4, 2) : null,
+    pixels: vals?.ndvi_count ?? null,
+    thumbUrl: url
+  };
+}
+
+async function siteLandCover(fp, date) {
+  const t = new Date(date).getTime();
+  const start = isoDay(new Date(t - 60 * 86400000));
+  const end = isoDay(new Date(t + 60 * 86400000));
+  const dw = ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1').filterBounds(fp.aoi).filterDate(start, end).select('label');
+  const n = await evalEE(dw.size(), 60000);
+  if (!n) return { status: 'NO_DATA', window: { start, end }, reason: 'no Dynamic World scenes in this window' };
+  const h = await evalEE(dw.mode().reduceRegion({ reducer: ee.Reducer.frequencyHistogram(), geometry: fp.aoi, scale: 10, maxPixels: 1e8 }).get('label'), 60000);
+  const total = Object.values(h || {}).reduce((a, b) => a + b, 0);
+  if (!total) return { status: 'NO_DATA', window: { start, end }, images: n, reason: `${n} Dynamic World scene(s), but none with cloud-free pixels over the analysis area` };
+  const classes = Object.entries(h).map(([k, v]) => ({ name: DW_CLASSES[+k]?.label || `class ${k}`, color: DW_CLASSES[+k]?.color, share: round(v / total, 3) })).sort((a, b) => b.share - a.share);
+  return { status: 'AVAILABLE', window: { start, end }, images: n, dominant: classes[0], classes: classes.slice(0, 4) };
+}
+
+export async function computeSiteChange({ lat, lng, bufferM = 50, geometry = null, baselineDate, currentDate }) {
+  assertEE();
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) throw new GeoError('INVALID_INPUT', 'Intervention has no coordinates.', 400);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(baselineDate || '') || !/^\d{4}-\d{2}-\d{2}$/.test(currentDate || '')) throw new GeoError('INVALID_INPUT', 'baselineDate and currentDate must be YYYY-MM-DD.', 400);
+  if (baselineDate >= currentDate) throw new GeoError('INVALID_INPUT', 'Baseline date must be before the current date.', 400);
+  const k = `site-change:${lat.toFixed(5)},${lng.toFixed(5)}:${geometry ? geometryKey(geometry) : bufferM}:${baselineDate}:${currentDate}`;
+  return memo(k, async () => {
+    const fp = siteFootprint({ lat, lng, bufferM, geometry });
+    const areaHa = round((await evalEE(fp.aoi.area(1), 30000)) / 1e4, 2);
+    const [b, c] = await Promise.all([siteScene(fp, baselineDate), siteScene(fp, currentDate)]);
+    if (b.status === 'AVAILABLE' && c.status === 'AVAILABLE' && b.imageId === c.imageId) {
+      c.status = 'NO_SUITABLE_IMAGE';
+      c.reason = 'Both dates resolve to the same Sentinel-2 scene — choose dates further apart.';
+    }
+    const [bs, cs, lb, lc] = await Promise.all([
+      b.status === 'AVAILABLE' ? siteSceneStats(fp, b) : null,
+      c.status === 'AVAILABLE' ? siteSceneStats(fp, c) : null,
+      siteLandCover(fp, baselineDate).catch((e) => ({ status: 'ERROR', reason: e.message })),
+      siteLandCover(fp, currentDate).catch((e) => ({ status: 'ERROR', reason: e.message }))
+    ]);
+    const baseline = bs ? { ...b, ...bs } : b;
+    const current = cs ? { ...c, ...cs } : c;
+    const both = bs && cs;
+    const delta = (key) => (both && bs[key] != null && cs[key] != null ? { before: bs[key], after: cs[key], delta: round(cs[key] - bs[key]) } : null);
+    return {
+      status: both ? 'AVAILABLE' : 'NO_SUITABLE_IMAGE',
+      analysisArea: { kind: fp.kind, center: { lat, lng }, radiusM: fp.kind === 'circle' ? bufferM : null, areaHa },
+      baseline, current,
+      change: both ? { ndvi: delta('ndvi'), ndwi: delta('ndwi'), ndmi: delta('ndmi'), waterHa: delta('waterHa') } : null,
+      landCover: {
+        before: lb, after: lc,
+        transition: lb?.status === 'AVAILABLE' && lc?.status === 'AVAILABLE' ? { from: lb.dominant.name, to: lc.dominant.name, changed: lb.dominant.name !== lc.dominant.name } : null,
+        dataset: 'GOOGLE/DYNAMICWORLD/V1', method: 'Per-pixel mode of label band in ±60 days, share inside the analysis area'
+      },
+      provenance: {
+        dataset: S2_LABEL, collection: S2, resolution: '10 m (NDMI uses 20 m B11)',
+        cloudMask: 'SCL classes 1, 3, 8, 9, 10 masked',
+        selection: `Closest scene within ±${SITE_WINDOW_DAYS} days with ≥${SITE_MIN_CLEAR * 100}% clear pixels inside the analysis area`,
+        formulas: Object.fromEntries(Object.entries(INDEX_META).map(([key, m]) => [key, m.formula])),
+        waterMethod: 'Surface water = pixels with NDWI > 0 (McFeeters), area summed inside the analysis area'
+      },
+      computedAt: new Date().toISOString()
+    };
+  });
+}
+
+export async function computeSiteTerrain({ lat, lng, bufferM = 50, geometry = null }) {
+  assertEE();
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) throw new GeoError('INVALID_INPUT', 'Intervention has no coordinates.', 400);
+  const k = `site-terrain:${lat.toFixed(5)},${lng.toFixed(5)}:${geometry ? geometryKey(geometry) : bufferM}`;
+  return memo(k, async () => {
+    const fp = siteFootprint({ lat, lng, bufferM, geometry });
+    const dem = ee.Image('USGS/SRTMGL1_003').select('elevation');
+    const slope = ee.Terrain.slope(dem).rename('slope');
+    // terrain stats over at least one SRTM pixel neighbourhood
+    const terrainAoi = bufferM < 45 && fp.kind === 'circle' ? fp.point.buffer(45) : fp.aoi;
+    const upa = ee.Image('MERIT/Hydro/v1_0_1').select('upa');
+    const nearbyRivers = ee.FeatureCollection(RIVERS).filterBounds(fp.point.buffer(25000));
+    const res = await evalEE(ee.Dictionary({
+      terrain: dem.addBands(slope).reduceRegion({ reducer: ee.Reducer.mean().combine(ee.Reducer.minMax(), '', true), geometry: terrainAoi, scale: 30, maxPixels: 1e7 }),
+      upa: upa.reduceRegion({ reducer: ee.Reducer.max(), geometry: fp.point.buffer(Math.max(bufferM, 90)), scale: 90, maxPixels: 1e7 }).get('upa'),
+      riverCount: nearbyRivers.size(),
+      riverDistanceM: ee.Algorithms.If(nearbyRivers.size().gt(0), nearbyRivers.geometry().distance(fp.point, 10), null)
+    }), 90000);
+    const t = res.terrain || {};
+    const elevation = t.elevation_mean != null ? { mean: round(t.elevation_mean, 0), min: round(t.elevation_min, 0), max: round(t.elevation_max, 0) } : null;
+    const slopeDeg = t.slope_mean != null ? { mean: round(t.slope_mean, 1), max: round(t.slope_max, 1) } : null;
+    const upaKm2 = res.upa != null ? round(res.upa, 2) : null;
+    const flowClass = upaKm2 == null ? null
+      : upaKm2 < 1 ? { level: 'LOW', explanation: 'Small upstream contributing area — hillslope position rather than a defined channel.' }
+      : upaKm2 < 10 ? { level: 'MODERATE', explanation: 'Upstream contributing area typical of a minor drainage line near the intervention.' }
+      : upaKm2 < 100 ? { level: 'HIGH', explanation: 'High upstream contributing flow signal near the intervention — likely on or next to a stream channel.' }
+      : { level: 'VERY HIGH', explanation: 'Very large upstream contributing area — the footprint is on or adjacent to a major river channel.' };
+    const slopeClass = slopeDeg == null ? null
+      : slopeDeg.mean < 3 ? 'Nearly level ground (< 3°).' : slopeDeg.mean < 8 ? 'Gentle slope (3–8°).' : slopeDeg.mean < 15 ? 'Moderate slope (8–15°).' : 'Steep ground (≥ 15°) — runoff and erosion potential is higher.';
+    const status = elevation || upaKm2 != null ? 'AVAILABLE' : 'NO_DATA';
+    return {
+      status,
+      elevation: elevation && { ...elevation, unit: 'm', dataset: 'USGS/SRTMGL1_003 (SRTM)', resolution: '30 m', method: `Mean/min/max over ${terrainAoi === fp.aoi ? 'the analysis area' : 'a 45 m radius (one SRTM pixel neighbourhood)'}` },
+      slope: slopeDeg && { ...slopeDeg, unit: '°', explanation: slopeClass, dataset: 'USGS/SRTMGL1_003 (SRTM)', resolution: '30 m', method: 'ee.Terrain.slope on SRTM DEM' },
+      flowAccumulation: upaKm2 != null ? { upstreamAreaKm2: upaKm2, ...flowClass, dataset: 'MERIT/Hydro/v1_0_1 (upa)', resolution: '~90 m', method: `Maximum upstream drainage area within ${Math.max(bufferM, 90)} m` } : null,
+      drainage: res.riverDistanceM != null
+        ? { distanceM: round(res.riverDistanceM, 0), dataset: 'WWF/HydroSHEDS/v1/FreeFlowingRivers', resolution: '15 arc-second network', method: 'Distance from the intervention point to the nearest mapped river reach', note: 'Only rivers in the HydroSHEDS network (≈10 km² upstream area and larger) are mapped.' }
+        : { distanceM: null, note: 'No mapped HydroSHEDS river reach within 25 km.', dataset: 'WWF/HydroSHEDS/v1/FreeFlowingRivers' },
+      computedAt: new Date().toISOString()
+    };
+  });
+}

@@ -1,6 +1,6 @@
 # DHARAWATCH — Field Intelligence & Satellite Monitoring Platform
 
-> Complete geospatial intelligence platform combining field observations, AI vision analysis, satellite spectral analysis, watershed context, mission planning, and evidence-based decision making.
+> Complete geospatial intelligence platform combining field observations, AI vision analysis, satellite spectral analysis, watershed context, intervention evidence review, and evidence-based decision making.
 
 ---
 
@@ -9,7 +9,7 @@
 ### Prerequisites
 - **Node.js ≥ 20.19** (22 LTS recommended; `nvm use` reads `.nvmrc`) — Vite 8 will not start on older Node
 - **Google Earth Engine** service account registered for Earth Engine — either the `EARTH_ENGINE_*` variables in `.env.local` or `ee-key.json` in the project root (never commit either)
-- **Google Maps API Key** with Places API (New) enabled (Mission / Field)
+- **Google Maps API Key** (Field map)
 - **Gemini API Key** (optional — AI vision analysis and the AI watershed brief)
 - Outbound internet access from the backend (Earth Engine, OpenStreetMap Nominatim, Wikipedia/Wikidata, Wikimedia Commons, Gemini)
 
@@ -81,7 +81,7 @@ DHARAWATCH/
 │   │   ├── Detect/               # Object & change detection (water, vegetation)
 │   │   ├── Explore/              # Map exploration with AI copilot
 │   │   ├── Field/                # Field observation capture & evidence
-│   │   ├── Mission/              # Mission planning & route optimization
+│   │   ├── EvidenceReview/       # Intervention Evidence Review (field + satellite + terrain)
 │   │   ├── Watershed/            # Watershed intelligence command
 │   │   ├── Watch/                # Continuous monitoring watchlist
 │   │   ├── Timeline/             # Temporal satellite ribbon
@@ -95,7 +95,7 @@ DHARAWATCH/
 ├── server.js                     # Main Express API server
 ├── server-gee.js                 # Google Earth Engine integration
 ├── server/
-│   ├── services/                 # AI explainer, geospatial analysis, watershed, mission
+│   ├── services/                 # AI explainer, geospatial analysis, watershed
 │   └── ...                       # Internal services
 └── .planning/                    # Project planning artifacts
 ```
@@ -125,8 +125,6 @@ cp .env.example .env.local
 ### Google Cloud APIs to Enable
 - **Earth Engine API**
 - **Maps JavaScript API**
-- **Places API (New)** - for origin search in Mission Planner
-- **Directions API** - for route optimization in Mission Planner
 
 ---
 
@@ -142,15 +140,16 @@ cp .env.example .env.local
 - Field ↔ Satellite agreement scoring
 - Immutable evidence passport with provenance
 
-### 2. Mission Planner
-**Target Watershed → Origin Base → Evidence Gaps → Candidates → Scoring → Routing → Time Validation**
-- Search watersheds by name/coordinates
-- Search field bases/origins via Google Places API (New)
-- Evidence gap analysis from satellite anomalies
-- Candidate stop generation & transparent scoring
-- Google Maps routing (DRIVING, WALKING, DRIVING_WALKING, BICYCLING)
-- Mission time budget validation with safety buffer
-- GPX export for field GPS devices
+### 2. Intervention Evidence Review (`/evidence-review`)
+**Watershed → Intervention → Field evidence + Satellite change + Terrain → Evidence status → Mark reviewed**
+- Interventions come from the `interventions` table (Watershed → Intervention Passport → REVIEW EVIDENCE)
+- Field evidence: photos linked to the intervention or located within 1 km, plus inspection records; photo viewer with EXIF and AI observation
+- Satellite change: Sentinel-2 SR scenes closest to the chosen baseline/current dates over an explicit analysis radius — NDVI, NDWI, NDMI, open-water area, Dynamic World land cover
+- Terrain: SRTM elevation/slope, MERIT Hydro upstream area, distance to HydroSHEDS rivers
+- Categorical evidence status (STRONG / NEEDS UPDATE / LIMITED / INCONSISTENT / NO DATA) with reasons — no numeric score
+- Optional AI brief (Gemini, server-side, numbers checked against the facts)
+- MARK REVIEWED saves the outcome on the intervention and as a record in the Evidence page (`/evidence`)
+- Old `/mission` links redirect here (Mission planner was retired)
 
 ### 3. Watershed Intelligence Command (`/watershed`)
 **Search / click / draw anywhere on Earth → HydroBASINS watershed → live Earth Engine analytics.** Nothing is pre-stored per river; every basin is resolved and named live.
@@ -164,7 +163,7 @@ cp .env.example .env.local
 - **Draw** a polygon → every intersecting watershed, grouped by level, scrollable; select any
 - **Demo vs Saved** are separate: 8 curated demos; your saved watersheds persist in SQLite with exact geometry
 - Panels: drag (header), scroll, collapse, expand, close
-- Hands the active watershed to Field, Mission, Compare and Ask
+- Hands the active watershed to Field, Evidence Review, Compare and Ask
 
 ### 4. Compare (Temporal Satellite Analysis)
 - Sentinel-2 MSI via Earth Engine
@@ -186,10 +185,9 @@ cp .env.example .env.local
 | Table | Purpose |
 |---|---|
 | `field_observations` | Uploaded photos, EXIF, AI analysis, location, evidence |
-| `evidence` | Immutable evidence passports |
+| `evidence` | Evidence records — field observations and intervention reviews (shown at `/evidence`) |
 | `watersheds` | Curated demos (`isDemo`), saved watersheds (`saved-…`), custom areas (`custom-…`) with geometry |
 | `interventions` | Watershed interventions + inspections |
-| `missions` | Generated mission plans with routes & stops |
 | `analyses` | Satellite analysis jobs |
 | `analysis_results` | Detection results (geometries, metrics) |
 | `ai_queries` | Ask query history |
@@ -240,9 +238,8 @@ Configure environment variables in your platform dashboard.
 
 1. **AI Vision**: Uses deterministic fallback when Gemini API unavailable (404/503)
 2. **Large basins**: first-time analytics for continental basins (Congo, Amazon) take 30–90 s; timelines for basins > 200,000 km² use the basin bounding box for the acquisition footprint (stated in the UI)
-3. **Mission Routing**: Requires Google Maps Directions API for real routes
-4. **Search**: Nominatim/Wikidata are public services with rate limits (~1 request/second)
-5. **Places API**: Requires "Places API (New)" enabled in Google Cloud Console
+3. **Search**: Nominatim/Wikidata are public services with rate limits (~1 request/second)
+4. **Restart the API after `git pull`**: new routes only exist once `npm start` is restarted (a stale server returns HTTP 500/404 for them)
 
 ---
 

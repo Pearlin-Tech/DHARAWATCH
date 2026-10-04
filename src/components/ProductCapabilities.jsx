@@ -26,10 +26,10 @@ export default function ProductCapabilities() {
       colSpan: 1
     },
     {
-      id: 'mission',
+      id: 'evidence-review',
       icon: <Ruler size={24} />,
-      title: 'MISSION',
-      desc: 'Turn change and evidence gaps into focused field missions.',
+      title: 'EVIDENCE REVIEW',
+      desc: 'Review field evidence, satellite change and terrain context for each watershed intervention.',
       colSpan: 1
     },
     {

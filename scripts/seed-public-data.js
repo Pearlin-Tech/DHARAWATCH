@@ -238,7 +238,7 @@ const infrastructure = [
 const evidenceGaps = [
   {
     id: 'gap-narmada-1',
-    watershedId: 'ws-narmada',
+    watershedId: 'hybas-4050031610',
     type: 'WATER_CHANGE',
     title: 'Reservoir shoreline expansion',
     description: 'Historical surface-water context (JRC Global Surface Water 1984-2024) indicates unverified changes.',
@@ -253,7 +253,7 @@ const evidenceGaps = [
   },
   {
     id: 'gap-narmada-2',
-    watershedId: 'ws-narmada',
+    watershedId: 'hybas-4050031610',
     type: 'INFRASTRUCTURE_CHANGE',
     title: 'Primary Spillway',
     description: 'Requires field verification for structure status.',

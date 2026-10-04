@@ -16,6 +16,17 @@ const __dirname = path.dirname(__filename);
 const ROOT = process.env.FIELD_DATA_DIR
   || path.join(path.dirname(__dirname), 'server-data', 'field');
 
+/**
+ * Records store absolute paths; if the project folder was moved/renamed those go stale.
+ * Fall back to the same file under the current field data root (<ROOT>/<obsId>/<file>).
+ */
+export function resolveFieldFile(obsId, storedPath) {
+  if (!storedPath) return null;
+  if (fs.existsSync(storedPath)) return storedPath;
+  const local = path.join(ROOT, obsId, path.basename(storedPath));
+  return fs.existsSync(local) ? local : null;
+}
+
 function ensureDir(p) {
   if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
 }
@@ -132,47 +143,13 @@ export async function storePhoto(obsId, buffer, originalname, mimetype) {
 const AI_KEY = process.env.AI_API_KEY;
 const AI_VISION_CACHE = new Map(); // hash → analysis
 
+// Shared server-side Gemini client: auto-selects a model this key can use (no hard-coded retired model).
 async function callGeminiVision(base64Image, mimeType, prompt) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${AI_KEY}`;
-  const body = {
-    contents: [{
-      parts: [
-        { inline_data: { mime_type: mimeType, data: base64Image } },
-        { text: prompt }
-      ]
-    }],
-    generationConfig: {
-      temperature: 0.1,
-      responseMimeType: 'application/json'
-    }
-  };
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(30000)
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    if (res.status === 503 && attempt < maxAttempts) {
-      const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000);
-      console.warn(`[Field] Gemini API 503, retrying in ${delay}ms (attempt ${attempt}/${maxAttempts})`);
-      await new Promise(r => setTimeout(r, delay));
-      return callGeminiVision(base64Image, mimeType, prompt, attempt + 1);
-    }
-    throw new Error(`Gemini API ${res.status}: ${err.slice(0, 200)}`);
-  }
-
-  const json = await res.json();
-  const text = json?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error('Empty Gemini response');
-
-  // Parse JSON from the response
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error('No JSON in Gemini response');
-  return JSON.parse(jsonMatch[0]);
+  const { callGeminiJSON } = await import('./watershedIntel.js');
+  const { json, model, error } = await callGeminiJSON({ prompt, image: { mimeType, base64: base64Image }, timeoutMs: 45000 });
+  if (!model) throw new Error(error?.reason || 'AI unavailable');
+  if (!json) throw new Error(`AI response from ${model} was not valid JSON`);
+  return { ...json, _model: model };
 }
 
 const VISION_PROMPT = `
@@ -301,7 +278,7 @@ export async function reverseGeocode(lat, lon) {
 // ─── Observation Persistence (delegates to DB passed in) ──────────
 export function buildObservationRecord({ obsId, photoId, exif, aiAnalysis,
   lat, lon, locationSource, captureTime, themes, condition, synthesis,
-  missionId, stopId, watershedId, hash, filePath, thumbPath }) {
+  missionId, stopId, watershedId, interventionId, hash, filePath, thumbPath }) {
   return {
     id: obsId,
     photoId,
@@ -319,6 +296,7 @@ export function buildObservationRecord({ obsId, photoId, exif, aiAnalysis,
     missionId: missionId || null,
     stopId: stopId || null,
     watershedId: watershedId || null,
+    interventionId: interventionId || null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
@@ -344,9 +322,9 @@ export function buildEvidenceRecord({ obsId, observation, aiAnalysis, satelliteC
       exif: observation.exif,
       locationSource: observation.location?.source
     },
-    missionId: observation.missionId,
-    stopId: observation.stopId,
+    type: 'FIELD_OBSERVATION',
     watershedId: observation.watershedId,
+    interventionId: observation.interventionId || null,
     createdAt: new Date().toISOString(),
     immutable: true
   };

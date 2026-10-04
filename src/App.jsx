@@ -1,5 +1,5 @@
 import React from 'react';
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import Home from './pages/Home';
 import Explore from './pages/Explore/Explore';
 import Watershed from './pages/Watershed/Watershed';
@@ -9,7 +9,7 @@ import Compare from './pages/Compare/Compare';
 import Measure from './pages/Measure/Measure';
 import Area from './pages/Area/Area';
 import Field from './pages/Field/Field';
-import Mission from './pages/Mission/Mission';
+import EvidenceReview from './pages/EvidenceReview/EvidenceReview';
 import WatchList from './pages/Watch/WatchList';
 import WatchNew from './pages/Watch/WatchNew';
 import WatchDetail from './pages/Watch/WatchDetail';
@@ -31,7 +31,9 @@ function App() {
             <Route path="/explore" element={<Explore />} />
             <Route path="/watershed" element={<Watershed />} />
             <Route path="/field" element={<Field />} />
-            <Route path="/mission" element={<Mission />} />
+            {/* Mission was retired; Evidence Review replaces it */}
+            <Route path="/mission" element={<Navigate to="/evidence-review" replace />} />
+            <Route path="/evidence-review" element={<EvidenceReview />} />
             <Route path="/ask" element={<Ask />} />
             <Route path="/detect" element={<Detect />} />
             <Route path="/compare" element={<Compare />} />
@@ -41,6 +43,7 @@ function App() {
             <Route path="/watch/new" element={<WatchNew />} />
             <Route path="/watch/:id" element={<WatchDetail />} />
             <Route path="/timeline" element={<Timeline />} />
+            <Route path="/evidence" element={<Evidence />} />
             <Route path="/evidence/:id" element={<Evidence />} />
             <Route path="/reports" element={<Reports />} />
             <Route path="/reports/:id" element={<ReportDetail />} />

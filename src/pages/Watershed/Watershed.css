@@ -332,3 +332,7 @@ textarea.ws-input { resize: vertical; font-family: var(--ws-mono); font-size: 10
 .ws-zoom-controls button:hover { background: rgba(255,255,255,0.1); color: #f2f3f5; }
 .ws-search-clear { background: none; border: none; color: var(--ws-mute); cursor: pointer; display: inline-flex; padding: 2px; border-radius: 4px; }
 .ws-search-clear:hover { color: #fff; background: rgba(255,255,255,0.08); }
+
+/* intervention handed over via ?focus= (Evidence Review / Field) */
+.ws-focus-marker { width: 18px; height: 18px; border-radius: 50%; background: #f59e0b; border: 3px solid #fff; box-shadow: 0 0 0 5px rgba(245,158,11,0.35); }
+.int-card.focused { outline: 1px solid rgba(245,158,11,0.6); background: rgba(245,158,11,0.06); }

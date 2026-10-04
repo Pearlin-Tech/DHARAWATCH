@@ -15,15 +15,16 @@ export function useAppContext() {
 
 export function AppProvider({ children }) {
   const [currentWatershed, setCurrentWatershed] = useState(null);
-  const [currentMission, setCurrentMission] = useState(null);
   const [currentObservation, setCurrentObservation] = useState(null);
+  // Canonical selected intervention (Evidence Review → Field / Compare / Watershed)
+  const [currentIntervention, setCurrentIntervention] = useState(null);
   const [demoMode, setDemoMode] = useState(false);
   const [demoLoading, setDemoLoading] = useState(false);
 
   const clearContext = () => {
     setCurrentWatershed(null);
-    setCurrentMission(null);
     setCurrentObservation(null);
+    setCurrentIntervention(null);
   };
 
   const loadDemo = async () => {
@@ -50,10 +51,10 @@ export function AppProvider({ children }) {
     <AppContext.Provider value={{
       currentWatershed,
       setCurrentWatershed,
-      currentMission,
-      setCurrentMission,
       currentObservation,
       setCurrentObservation,
+      currentIntervention,
+      setCurrentIntervention,
       clearContext,
       demoMode,
       setDemoMode,
@@ -69,7 +70,6 @@ export function AppProvider({ children }) {
 export function UniversalContextBar() {
   const { 
     currentWatershed, 
-    currentMission, 
     currentObservation,
     demoMode,
     demoLoading,
@@ -79,7 +79,7 @@ export function UniversalContextBar() {
   const location = useLocation();
   const navigate = useNavigate();
 
-  const isMajorPage = ['/mission', '/field', '/compare', '/evidence', '/ask'].some(p => location.pathname.startsWith(p));
+  const isMajorPage = ['/evidence-review', '/field', '/compare', '/evidence', '/ask'].some(p => location.pathname.startsWith(p));
 
   if (!isMajorPage) return null;
 
@@ -96,16 +96,6 @@ export function UniversalContextBar() {
     });
   }
 
-  if (currentMission) {
-    contextItems.push({
-      type: 'mission',
-      icon: <Navigation size={12} color="#f59e0b" />,
-      label: 'MISSION',
-      name: currentMission.name || currentMission.id?.slice(0, 12),
-      onClick: () => navigate('/mission', { state: { missionId: currentMission.id } }),
-      color: '#f59e0b'
-    });
-  }
 
   if (currentObservation) {
     contextItems.push({

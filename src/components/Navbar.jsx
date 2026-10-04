@@ -29,7 +29,7 @@ export default function Navbar() {
           <Link to="/explore" className="nav-link">Explore</Link>
           <Link to="/watershed" className="nav-link">Watershed</Link>
           <Link to="/field" className="nav-link">Field</Link>
-          <Link to="/mission" className="nav-link">Evidence Review</Link>
+          <Link to="/evidence-review" className="nav-link">Evidence Review</Link>
         </div>
         
         <div className="navbar-right hide-mobile">
@@ -52,7 +52,7 @@ export default function Navbar() {
           <Link to="/explore" className="nav-link" onClick={() => setIsMobileMenuOpen(false)}>Explore</Link>
           <Link to="/watershed" className="nav-link" onClick={() => setIsMobileMenuOpen(false)}>Watershed</Link>
           <Link to="/field" className="nav-link" onClick={() => setIsMobileMenuOpen(false)}>Field</Link>
-          <Link to="/mission" className="nav-link" onClick={() => setIsMobileMenuOpen(false)}>Evidence Review</Link>
+          <Link to="/evidence-review" className="nav-link" onClick={() => setIsMobileMenuOpen(false)}>Evidence Review</Link>
           <Link to="/explore" className="btn-secondary mt-4" style={{ textDecoration: 'none', textAlign: 'center' }} onClick={() => setIsMobileMenuOpen(false)}>Workspace</Link>
         </div>
       )}

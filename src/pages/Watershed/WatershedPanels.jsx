@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { RefreshCw, Play, Pause, SkipBack, SkipForward, MapPin, Pen, Trash2, Activity, Plus, X, Eye } from 'lucide-react';
+import { RefreshCw, Play, Pause, SkipBack, SkipForward, MapPin, Pen, Trash2, Activity, Plus, X, Eye, ClipboardCheck } from 'lucide-react';
 import { WATERSHED_LAYERS, LAYER_GROUPS, paletteGradient } from '../../shared/layerRegistry.js';
 import { formatArea } from '../../shared/geo.js';
 import {
@@ -262,7 +262,7 @@ export function attentionStatus(res) {
   if (res.status !== 'DONE') return res.status;
   return res.data.status;
 }
-export function AttentionBody({ ctx, res, onCompare, onMission }) {
+export function AttentionBody({ ctx, res, onCompare }) {
   if (!ctx) return <div className="ws-empty">Select a watershed to check change indicators.</div>;
   const a = res.data;
   return (
@@ -274,7 +274,7 @@ export function AttentionBody({ ctx, res, onCompare, onMission }) {
           <div className="att-card-head"><b>{it.type.replace(/_/g, ' ')}</b><Pill status={it.severity} /></div>
           <div className="att-card-reason">{it.reason}</div>
           <div className="att-card-meta">now {fmt(it.currentValue)} · ref {fmt(it.referenceValue)} · Δ {signed(it.delta)} · {it.source} · {it.date}</div>
-          <div className="att-card-actions"><button className="ws-mini-btn" onClick={onCompare}>COMPARE</button><button className="ws-mini-btn" onClick={onMission}>PLAN MISSION</button></div>
+          <div className="att-card-actions"><button className="ws-mini-btn" onClick={onCompare}>COMPARE</button></div>
         </div>
       ))}
       {a?.comparisons?.length > 0 && (
@@ -345,7 +345,7 @@ function InspectionForm({ onSubmit, onCancel, busy }) {
   );
 }
 
-export function InterventionsBody({ ctx, res, api, onFly, onField, onMission }) {
+export function InterventionsBody({ ctx, res, api, onFly, onField, onReview, focusId }) {
   const [editing, setEditing] = useState(null); // null | {} (new) | intervention
   const [inspecting, setInspecting] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -362,7 +362,7 @@ export function InterventionsBody({ ctx, res, api, onFly, onField, onMission }) 
         const si = getInterventionStatusInfo(iv.status);
         const last = iv.inspections?.[iv.inspections.length - 1];
         return (
-          <div key={iv.id} className="int-card" style={{ borderLeftColor: si.color }}>
+          <div key={iv.id} className={`int-card ${focusId === iv.id ? 'focused' : ''}`} style={{ borderLeftColor: si.color }}>
             <div className="int-card-head">
               <div><b>{iv.name}</b><small>{iv.type}</small></div>
               <span className="int-status" style={{ color: si.color, background: si.bg }}>{si.label}</span>
@@ -375,6 +375,7 @@ export function InterventionsBody({ ctx, res, api, onFly, onField, onMission }) 
             </div>
             <div className="int-actions">
               <button className="ws-mini-btn" onClick={() => onFly(iv)} title="Fly to"><MapPin size={10} /></button>
+              {onReview && <button className="ws-mini-btn primary" onClick={() => onReview(iv)} title="Open Intervention Evidence Review"><ClipboardCheck size={10} /> REVIEW EVIDENCE</button>}
               <button className="ws-mini-btn" onClick={() => { setInspecting(iv); setEditing(null); }}><Activity size={10} /> INSPECT</button>
               <button className="ws-mini-btn" onClick={() => { setEditing(iv); setInspecting(null); }}><Pen size={10} /> EDIT</button>
               <button className="ws-mini-btn danger" disabled={busy} onClick={() => window.confirm(`Delete intervention "${iv.name}"?`) && run(() => api.remove(iv.id))}><Trash2 size={10} /></button>
@@ -388,7 +389,6 @@ export function InterventionsBody({ ctx, res, api, onFly, onField, onMission }) 
       <div className="int-footer">
         {!editing && <button className="ws-mini-btn primary" onClick={() => setEditing({})}><Plus size={10} /> ADD INTERVENTION</button>}
         <button className="ws-mini-btn" onClick={onField}>FIELD OBSERVATION</button>
-        <button className="ws-mini-btn" onClick={onMission}>PLAN MISSION</button>
       </div>
     </div>
   );
