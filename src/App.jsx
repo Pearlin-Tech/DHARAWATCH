@@ -19,15 +19,13 @@ import Reports from './pages/Reports/Reports';
 import ReportDetail from './pages/Reports/ReportDetail';
 import Settings from './pages/Settings/Settings';
 import { GlobalProvider } from './context/GlobalContext';
-import { AppProvider, UniversalContextBar } from './components/UniversalContextBar';
-import './components/UniversalContextBar.css';
+import { AppProvider } from './components/UniversalContextBar';
 
 function App() {
   return (
     <AppProvider>
       <GlobalProvider>
         <Router>
-          <UniversalContextBar />
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/explore" element={<Explore />} />

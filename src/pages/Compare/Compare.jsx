@@ -1,10 +1,48 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Crosshair, AlertTriangle, Play, Pause, ChevronLeft, ChevronRight as IconChevronRight, CheckCircle, XCircle, ArrowRight, TrendingUp, TrendingDown } from 'lucide-react';
+import { Crosshair, AlertTriangle, Play, Pause, ChevronLeft, ChevronRight as IconChevronRight, CheckCircle, XCircle, ArrowRight, TrendingUp, TrendingDown, LocateFixed, Loader2 } from 'lucide-react';
 import AppNavigation from '../../components/AppNavigation';
 import MapViewport from '../../components/MapViewport';
 import './Compare.css';
+
+// Esri World Imagery Wayback: dated sub-meter archives, served straight from a CDN
+// (no Earth Engine round-trip), so building-level detail appears instantly.
+const WAYBACK_CONFIG_URL = 'https://s3-us-west-2.amazonaws.com/config.maptiles.arcgis.com/waybackconfig.json';
+const WAYBACK_MAX_ZOOM = 19;
+const SENTINEL_MAX_ZOOM = 15;
+let waybackReleasesPromise = null;
+
+function loadWaybackReleases() {
+  if (!waybackReleasesPromise) {
+    waybackReleasesPromise = fetch(WAYBACK_CONFIG_URL)
+      .then(r => r.json())
+      .then(cfg => Object.values(cfg)
+        .map(r => ({ date: r.itemTitle.match(/(\d{4}-\d{2}-\d{2})/)?.[1], url: r.itemURL.replace('{level}', '{z}').replace('{row}', '{y}').replace('{col}', '{x}') }))
+        .filter(r => r.date)
+        .sort((a, b) => a.date.localeCompare(b.date)))
+      .catch(err => { waybackReleasesPromise = null; throw err; });
+  }
+  return waybackReleasesPromise;
+}
+
+// Latest release captured on or before the target date (falls back to the earliest one).
+function pickRelease(releases, dateStr) {
+  if (!releases?.length) return null;
+  let pick = releases[0];
+  for (const r of releases) { if (r.date <= dateStr) pick = r; else break; }
+  return pick;
+}
+
+// Client-side cache of /api/compare results so revisiting a date pair is instant.
+const compareCache = new Map();
+
+function distanceMeters(a, b) {
+  const R = 6371000, toRad = d => d * Math.PI / 180;
+  const dLat = toRad(b.lat - a.lat), dLng = toRad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
 
 export default function Compare() {
   const routerLocation = useLocation();
@@ -29,7 +67,10 @@ export default function Compare() {
   const [committedBaseline, setCommittedBaseline] = useState('2021-01-15');
   const [committedCurrent, setCommittedCurrent] = useState(new Date().toISOString().split('T')[0]);
 
-  const MIN_DATE = new Date('2019-01-01').getTime();
+  // Last 15 years. Imagery by era: Landsat 7 (2011–13), Landsat 8 (2013–15), Sentinel-2 (2015+);
+  // HD Wayback archives start Feb 2014.
+  const TIMELINE_YEARS = Array.from({ length: 16 }, (_, i) => 2011 + i);
+  const MIN_DATE = new Date('2011-01-01').getTime();
   const MAX_DATE = new Date('2026-12-31').getTime();
 
   const getPercentage = useCallback((dateStr) => {
@@ -55,6 +96,68 @@ export default function Compare() {
   const [showEvidence, setShowEvidence] = useState(false);
   const [baselineTileUrl, setBaselineTileUrl] = useState(null);
   const [currentTileUrl, setCurrentTileUrl] = useState(null);
+
+  // Imagery source: 'hd' (Wayback, ~0.3–0.5 m) or 'sentinel' (Earth Engine, 10 m)
+  const [imagery, setImagery] = useState('hd');
+  const [waybackReleases, setWaybackReleases] = useState(null);
+  useEffect(() => {
+    loadWaybackReleases().then(setWaybackReleases).catch(() => setImagery('sentinel'));
+  }, []);
+  const baselineRelease = pickRelease(waybackReleases, baselineDate);
+  const currentRelease = pickRelease(waybackReleases, timelineDate);
+  const hdActive = imagery === 'hd' && !!waybackReleases;
+  const leftTileUrl = hdActive ? baselineRelease?.url : baselineTileUrl;
+  const rightTileUrl = hdActive ? currentRelease?.url : currentTileUrl;
+  const tileMaxZoom = hdActive ? WAYBACK_MAX_ZOOM : SENTINEL_MAX_ZOOM;
+
+  // Live location
+  const [liveTracking, setLiveTracking] = useState(false);
+  const [liveStatus, setLiveStatus] = useState(null); // { state: 'locating' | 'ok' | 'error', accuracy, message }
+  const watchIdRef = useRef(null);
+  const hasCenteredRef = useRef(false);
+  const lastLiveCoordsRef = useRef(null);
+
+  const stopLiveLocation = useCallback(() => {
+    if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
+    watchIdRef.current = null;
+    setLiveTracking(false);
+    setLiveStatus(null);
+  }, []);
+
+  const startLiveLocation = useCallback(() => {
+    if (!('geolocation' in navigator)) {
+      setLiveStatus({ state: 'error', message: 'Geolocation not supported by this browser' });
+      return;
+    }
+    hasCenteredRef.current = false;
+    lastLiveCoordsRef.current = null;
+    setLiveTracking(true);
+    setLiveStatus({ state: 'locating' });
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      (pos) => {
+        const coords = { lng: pos.coords.longitude, lat: pos.coords.latitude };
+        setLiveStatus({ state: 'ok', accuracy: Math.round(pos.coords.accuracy) });
+        // Only move the marker (which re-runs the analysis) after a meaningful move
+        if (!lastLiveCoordsRef.current || distanceMeters(lastLiveCoordsRef.current, coords) > 25) {
+          lastLiveCoordsRef.current = coords;
+          setMarkerCoords(coords);
+        }
+        if (!hasCenteredRef.current && map1) {
+          hasCenteredRef.current = true;
+          map1.flyTo({ center: [coords.lng, coords.lat], zoom: 18, speed: 1.6 });
+        }
+      },
+      (err) => {
+        setLiveStatus({ state: 'error', message: err.code === 1 ? 'Location permission denied' : 'Could not get location' });
+        if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
+        watchIdRef.current = null;
+        setLiveTracking(false);
+      },
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
+    );
+  }, [map1]);
+
+  useEffect(() => () => { if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current); }, []);
 
   const sliderRef = useRef(null);
   const isSyncingLeft = useRef(false);
@@ -145,6 +248,22 @@ export default function Compare() {
   // API call — only fires when committed dates change (on pointer-up), not while dragging
   useEffect(() => {
     setShowEvidence(false);
+    const cacheKey = `${committedBaseline}|${committedCurrent}|${markerCoords.lat.toFixed(4)}|${markerCoords.lng.toFixed(4)}`;
+    const applyResult = (data) => {
+      setApiResult(data);
+      switch (data.status) {
+        case 'success':
+          setAnalysisState('success');
+          if (data.baseline?.tileUrl) setBaselineTileUrl(data.baseline.tileUrl);
+          if (data.current?.tileUrl) setCurrentTileUrl(data.current.tileUrl);
+          break;
+        case 'insufficient_data': setAnalysisState('insufficient'); break;
+        case 'invalid': setAnalysisState('invalid'); break;
+        default: setAnalysisState('error');
+      }
+    };
+    const cached = compareCache.get(cacheKey);
+    if (cached) { applyResult(cached); return; }
     setAnalysisState('processing');
     const timeoutId = setTimeout(async () => {
       // Always use committed dates for the actual query
@@ -164,23 +283,14 @@ export default function Compare() {
         if (!response.ok) { setAnalysisState('error'); setApiResult({ status: 'error', message: `HTTP ${response.status}` }); return; }
         const data = await response.json();
         if (controller.signal.aborted) return;
-        setApiResult(data);
-        switch (data.status) {
-          case 'success':
-            setAnalysisState('success');
-            if (data.baseline?.tileUrl) setBaselineTileUrl(data.baseline.tileUrl);
-            if (data.current?.tileUrl) setCurrentTileUrl(data.current.tileUrl);
-            break;
-          case 'insufficient_data': setAnalysisState('insufficient'); break;
-          case 'invalid': setAnalysisState('invalid'); break;
-          default: setAnalysisState('error');
-        }
+        if (data.status === 'success' || data.status === 'insufficient_data') compareCache.set(cacheKey, data);
+        applyResult(data);
       } catch (err) {
         if (err.name === 'AbortError') return;
         setAnalysisState('error');
         setApiResult({ status: 'error', message: err.message });
       }
-    }, 600);
+    }, 250);
     return () => { clearTimeout(timeoutId); if (abortControllerRef.current) abortControllerRef.current.abort(); };
   }, [committedBaseline, committedCurrent, markerCoords]);
 
@@ -212,9 +322,28 @@ export default function Compare() {
           </div>
           <div className="h-6 w-px bg-white/10"></div>
           <div className="flex flex-col">
-            <span className="text-[10px] text-gray-dim uppercase mb-0.5">Sensor</span>
-            <span className="text-white">Sentinel-2 MSI</span>
+            <span className="text-[10px] text-gray-dim uppercase mb-0.5">Imagery</span>
+            <span className="text-white">{hdActive ? 'HD aerial (~0.5 m)'
+              : [...new Set([apiResult?.baseline?.sensor, apiResult?.current?.sensor].filter(Boolean))].join(' → ') || 'Sentinel-2 MSI (10 m)'}</span>
           </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+        <button
+          className={`compare-live-btn ${liveTracking ? 'active' : ''} ${liveStatus?.state === 'error' ? 'error' : ''}`}
+          onClick={liveTracking ? stopLiveLocation : startLiveLocation}
+          title={liveStatus?.message || (liveTracking ? 'Stop live location' : 'Go to my live location')}
+        >
+          {liveStatus?.state === 'locating' ? <Loader2 size={13} className="animate-spin" /> : <LocateFixed size={13} />}
+          {liveStatus?.state === 'error' ? liveStatus.message
+            : liveStatus?.state === 'ok' ? `Live · ±${liveStatus.accuracy} m`
+            : liveStatus?.state === 'locating' ? 'Locating…'
+            : 'My location'}
+        </button>
+
+        <div className="flex items-center gap-1 bg-black/40 p-1 rounded-md border border-white/5">
+          <button className={`px-3 py-1.5 rounded-sm transition-colors ${hdActive ? 'bg-accent-blue text-white' : 'text-gray hover:text-white'}`} disabled={!waybackReleases} onClick={() => setImagery('hd')}>HD</button>
+          <button className={`px-3 py-1.5 rounded-sm transition-colors ${!hdActive ? 'bg-accent-blue text-white' : 'text-gray hover:text-white'}`} onClick={() => setImagery('sentinel')}>10&nbsp;m</button>
         </div>
 
         <div className="flex items-center gap-2 bg-black/40 p-1 rounded-md border border-white/5">
@@ -222,15 +351,16 @@ export default function Compare() {
           <button className={`px-3 py-1.5 rounded-sm transition-colors ${mode === 'difference' ? 'bg-accent-blue text-white' : 'text-gray hover:text-white'}`} onClick={() => setMode('difference')}>Difference</button>
           <button className={`px-3 py-1.5 rounded-sm transition-colors ${mode === 'flicker' ? 'bg-accent-blue text-white' : 'text-gray hover:text-white'}`} onClick={() => { setMode('flicker'); setFlickerActive(true); }}>Flicker</button>
         </div>
+        </div>
       </div>
 
       {/* MAPS */}
       <div className="compare-maps-wrapper" ref={sliderRef} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp}>
         {/* LEFT: BEFORE */}
         <div className="map-layer baseline-layer" style={{ opacity: 1 }}>
-          <MapViewport center={[initialCoords.lng, initialCoords.lat]} zoom={13} onMapLoad={setMap1} hoverCoords={hoverCoords} setHoverCoords={setHoverCoords} markerCoords={markerCoords} onMapClick={setMarkerCoords} tileUrl={baselineTileUrl} />
+          <MapViewport center={[initialCoords.lng, initialCoords.lat]} zoom={13} onMapLoad={setMap1} hoverCoords={hoverCoords} setHoverCoords={setHoverCoords} markerCoords={markerCoords} onMapClick={setMarkerCoords} tileUrl={leftTileUrl} tileMaxZoom={tileMaxZoom} />
           {mode === 'split' && (
-            <div className="layer-label glass-panel">BEFORE — {apiResult?.baseline?.actualDate || formatDisplayDate(baselineDate)}</div>
+            <div className="layer-label glass-panel">BEFORE — {hdActive ? `HD ${formatDisplayDate(baselineRelease?.date)}` : (apiResult?.baseline?.actualDate || formatDisplayDate(baselineDate))}</div>
           )}
         </div>
 
@@ -241,9 +371,9 @@ export default function Compare() {
           pointerEvents: mode === 'split' ? 'auto' : 'none',
           mixBlendMode: mode === 'difference' ? 'screen' : 'normal'
         }}>
-          <MapViewport center={[initialCoords.lng, initialCoords.lat]} zoom={13} onMapLoad={setMap2} tileUrl={currentTileUrl} />
+          <MapViewport center={[initialCoords.lng, initialCoords.lat]} zoom={13} onMapLoad={setMap2} tileUrl={rightTileUrl} tileMaxZoom={tileMaxZoom} />
           {mode === 'split' && (
-            <div className="layer-label right glass-panel">AFTER — {apiResult?.current?.actualDate || formatDisplayDate(timelineDate)}</div>
+            <div className="layer-label right glass-panel">AFTER — {hdActive ? `HD ${formatDisplayDate(currentRelease?.date)}` : (apiResult?.current?.actualDate || formatDisplayDate(timelineDate))}</div>
           )}
         </div>
 
@@ -287,7 +417,7 @@ export default function Compare() {
 
           <div className="timeline-track-container flex-1">
             <div className="text-[10px] font-mono text-gray-dim uppercase mb-2 flex justify-between">
-              <span>Timeline: 2019 — 2026 · Drag both nodes freely</span>
+              <span>Timeline: 2011 — 2026 · Drag both nodes freely</span>
               <span className="text-accent-blue">{yearsDiff()} years apart</span>
             </div>
 
@@ -303,7 +433,7 @@ export default function Compare() {
               <div style={{ position: 'absolute', top: 0, height: '100%', left: `${getPercentage(baselineDate)}%`, right: `${100 - getPercentage(timelineDate)}%`, background: 'linear-gradient(90deg, rgba(156,163,175,0.3), rgba(37,99,235,0.4))', borderRadius: '9999px', pointerEvents: 'none' }}></div>
 
               {/* Year ticks */}
-              {[2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026].map(y => {
+              {TIMELINE_YEARS.map(y => {
                 const pct = getPercentage(`${y}-01-01`);
                 return (
                   <div key={y} style={{ position: 'absolute', top: '-3px', left: `${pct}%`, width: '1px', height: '12px', backgroundColor: 'rgba(255,255,255,0.12)', pointerEvents: 'none' }}>

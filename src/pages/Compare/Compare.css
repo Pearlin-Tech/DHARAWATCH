@@ -122,3 +122,21 @@
   padding: 24px;
   border-radius: 16px;
 }
+.compare-live-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.4);
+  color: var(--text-secondary, #9ca3af);
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+.compare-live-btn:hover { color: #fff; border-color: rgba(255, 255, 255, 0.2); }
+.compare-live-btn.active { color: #fff; border-color: var(--accent-blue); background: rgba(37, 99, 235, 0.2); }
+.compare-live-btn.error { color: #f59e0b; border-color: rgba(245, 158, 11, 0.4); }
