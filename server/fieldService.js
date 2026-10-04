@@ -324,6 +324,7 @@ export function buildEvidenceRecord({ obsId, observation, aiAnalysis, satelliteC
     },
     type: 'FIELD_OBSERVATION',
     watershedId: observation.watershedId,
+    watershedName: observation.watershedName || null,
     interventionId: observation.interventionId || null,
     createdAt: new Date().toISOString(),
     immutable: true

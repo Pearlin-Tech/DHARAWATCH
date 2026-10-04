@@ -29,3 +29,5 @@
   .evd-page .explore-nav-rail { display: none; }
   .evd-list, .evd-detail { grid-column: 1; }
 }
+.evd-tag.detection { color: #fbbf24; background: rgba(251, 191, 36, 0.1); }
+.evd-mono { font-family: var(--evd-mono); font-size: 11px; }
