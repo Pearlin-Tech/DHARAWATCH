@@ -73,6 +73,7 @@ function getStepperState(obs, uploadState, fieldContext) {
 
 import { useGlobalContext } from '../../context/GlobalContext';
 import { useAppContext } from '../../components/UniversalContextBar';
+import { saveLocalEvidence, imageThumbnail } from '../../services/localEvidence';
 
 // ─── Component ───────────────────────────────────────────────────
 export default function Field() {
@@ -285,41 +286,18 @@ export default function Field() {
     }
   };
 
-  const handleDemoPhoto = () => {
-    setUploadState('done');
-    // Public domain/wikimedia image of Sardar Sarovar
-    setPhotoUrl('https://upload.wikimedia.org/wikipedia/commons/thumb/c/c5/Sardar_Sarovar_Dam_02.jpg/640px-Sardar_Sarovar_Dam_02.jpg');
-    setAnalysisState('done');
-
-    const mockAiData = {
-      landmarkCandidates: [{ name: 'SARDAR SAROVAR DAM', confidence: 'high' }],
-      scene: 'Large concrete gravity dam with active water release. Massive hydraulic infrastructure dominating a river valley context.',
-      visibleWater: { present: true, type: 'river' },
-      vegetationCondition: { present: true, density: 'moderate' },
-      structures: [{ type: 'dam', status: 'IDENTIFIED', condition: 'intact', notes: 'Sardar Sarovar Dam main structure, spillways active.' }],
-      observationSummary: '[PUBLIC DEMO SYNTHESIS] Field observation of Sardar Sarovar Dam confirms structural integrity and active flow. Immediate downstream vegetation appears healthy. Satellite correlation requested.',
-      uncertainty: 'Unable to gauge exact flow rates or structural micro-fractures from this perspective.'
-    };
-
-    setObs({
-      id: 'demo-obs-' + Date.now(),
-      status: 'DRAFT',
-      hash: 'DEMO_HASH_SARDAR_SAROVAR',
-      captureTime: new Date().toISOString(),
-      location: { latitude: 21.8315, longitude: 73.7485, source: 'LANDMARK_REGISTRY' },
-      landmark: { name: 'SARDAR SAROVAR DAM', river: 'Narmada', region: 'Gujarat, India' },
-      aiAnalysis: { status: 'COMPLETE', data: mockAiData },
-      themes: ['WATER REGIME', 'WATERSHED INTERVENTION'],
-      condition: 'ACTIVE FLOW',
-      synthesis: mockAiData.observationSummary,
-      exif: { status: 'GPS_FOUND', camera: { make: 'Simulated', model: 'Demo Sensor' } },
-      watershedId: 'narmada-basin',
-      watershedName: 'Narmada Basin'
-    });
-
-    setThemes(['WATER REGIME', 'WATERSHED INTERVENTION']);
-    setCondition('ACTIVE FLOW');
-    setSynthesis(mockAiData.observationSummary);
+  // Demo: run the REAL pipeline (upload → AI → location → satellite → evidence) with the bundled sample photo.
+  // The sample has no EXIF GPS, so it is pinned at the Sardar Sarovar check-dam site and labelled DEMO_PIN.
+  const demoPin = useRef(null);
+  const handleDemoPhoto = async () => {
+    try {
+      const blob = await (await fetch('/field-photo.jpg')).blob();
+      demoPin.current = { lat: 21.83, lon: 73.74 };
+      await handleFileSelect(new File([blob], 'sample-check-dam.jpg', { type: blob.type || 'image/jpeg' }));
+    } catch (err) {
+      setUploadState('error');
+      setUploadError(`Could not load sample photo: ${err.message}`);
+    }
   };
 
   // ─ AI Analysis ───────────────────────────────────────────────
@@ -357,6 +335,14 @@ export default function Field() {
       console.error('Location:', err.message);
     }
   };
+
+  useEffect(() => {
+    if (obs && !obs.location && demoPin.current) {
+      const { lat, lon } = demoPin.current;
+      demoPin.current = null;
+      handleSetLocation(lat, lon, 'DEMO_PIN');
+    }
+  }, [obs?.id, obs?.location]);
 
   // Auto-pin location if missing but global context is available
   useEffect(() => {
@@ -417,6 +403,7 @@ export default function Field() {
       await patchObs(obsId, { themes, condition, synthesis });
       const result = await createEvidence(obsId);
       setEvidenceResult(result);
+      if (result?.evidence) saveLocalEvidence({ ...result.evidence, thumbnail: await imageThumbnail(`${API}/field/${obsId}/photo`) });
       const updated = await fieldApi(`/field/${obsId}`);
       setObs(updated);
     } catch (err) {
@@ -563,7 +550,7 @@ export default function Field() {
                   )}
                   <div style={{ marginTop: 24, textAlign: 'center' }} onClick={e => e.preventDefault()}>
                     <button className="fp-btn" style={{ padding: '6px 12px' }} onClick={handleDemoPhoto}>
-                      USE SARDAR SAROVAR DEMO
+                      TRY WITH SAMPLE PHOTO
                     </button>
                   </div>
                 </label>
@@ -725,9 +712,12 @@ export default function Field() {
               <div className="om-overlay-top">
                 <div className="om-row">
                   <span>
-                    <span className={obs?.satelliteContext?.status === 'UNAVAILABLE' && !fieldContext ? 'om-red' : 'om-green'} style={{ color: obs?.satelliteContext?.status === 'UNAVAILABLE' && !fieldContext ? '#f87171' : '#10b981' }}>●</span>
-                    {obs?.satelliteContext?.status === 'AVAILABLE' || fieldContext?.satellite?.status !== 'UNAVAILABLE' ? ' SATELLITE CONTEXT LOADED' :
-                      ' SATELLITE ANALYSIS UNAVAILABLE'}
+                    {(() => {
+                      const loaded = obs?.satelliteContext?.status === 'AVAILABLE' || (fieldContext && fieldContext.satellite?.status !== 'UNAVAILABLE');
+                      const label = loaded ? ' SATELLITE CONTEXT LOADED' : !obs?.location ? ' AWAITING PHOTO LOCATION' : ' SATELLITE ANALYSIS UNAVAILABLE';
+                      const color = loaded ? '#10b981' : !obs?.location ? '#94a3b8' : '#f87171';
+                      return <><span style={{ color }}>●</span>{label}</>;
+                    })()}
                   </span>
                   <span className="om-gray">MODE: <span className="om-green" style={{ fontWeight: 600 }}>{satelliteMode}</span></span>
                 </div>

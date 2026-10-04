@@ -8,6 +8,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Camera, ClipboardCheck, RefreshCw, Satellite } from 'lucide-react';
 import AppNavigation from '../../components/AppNavigation';
 import { evidenceService } from '../../services/evidenceService';
+import { loadLocalEvidence } from '../../services/localEvidence';
 import './Evidence.css';
 
 const fmt = (d) => (d ? new Date(d).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—');
@@ -34,9 +35,14 @@ export default function Evidence() {
 
   const load = () => {
     setState((s) => ({ ...s, status: 'LOADING' }));
+    const merge = (serverRows) => {
+      const byId = new Map((Array.isArray(serverRows) ? serverRows : []).map((e) => [e.id, e]));
+      for (const e of loadLocalEvidence()) byId.set(e.id, { ...byId.get(e.id), ...e }); // browser copy keeps the thumbnail
+      return [...byId.values()].sort((a, b) => new Date(when(b) || 0) - new Date(when(a) || 0));
+    };
     evidenceService.getAll()
-      .then((rows) => setState({ status: 'DONE', items: (Array.isArray(rows) ? rows : []).sort((a, b) => new Date(when(b) || 0) - new Date(when(a) || 0)) }))
-      .catch((e) => setState({ status: 'ERROR', items: [], error: e.message }));
+      .then((rows) => setState({ status: 'DONE', items: merge(rows) }))
+      .catch(() => setState({ status: 'DONE', items: merge([]), offline: true }));  // server unreachable → browser records only
   };
   useEffect(load, []);
 
@@ -73,10 +79,11 @@ export default function Evidence() {
             <div className="evd-title">
               <span className={`evd-tag ${kind(selected).toLowerCase()}`}>{kind(selected)}</span>
               <h1>{title(selected)}</h1>
-              <small>{selected.id} · created {fmt(when(selected))}</small>
+              <small>{selected.id} · created {fmt(when(selected))}{selected.storedInBrowser ? ' · saved in this browser' : ''}</small>
             </div>
             {selected.observationId && (
-              <img className="evd-photo" src={`/api/field/${selected.observationId}/photo`} alt="Field evidence" onError={(ev) => { ev.currentTarget.style.display = 'none'; }} />
+              <img className="evd-photo" src={`/api/field/${selected.observationId}/photo`} alt="Field evidence"
+                onError={(ev) => { if (selected.thumbnail && ev.currentTarget.src !== selected.thumbnail) ev.currentTarget.src = selected.thumbnail; else ev.currentTarget.style.display = 'none'; }} />
             )}
             <dl className="evd-dl">
               {selected.label && <><dt>Evidence status</dt><dd>{selected.label}</dd></>}

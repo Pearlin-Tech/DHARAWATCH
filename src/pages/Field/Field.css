@@ -11,7 +11,7 @@
 .field-content {
   flex: 1;
   position: relative;
-  margin-left: 72px; /* sidebar width */
+  margin-left: calc(72px + var(--spacing-6) + 12px); /* nav rail + its inset */
   overflow-y: auto;
   overflow-x: hidden;
   padding: 24px;
@@ -135,13 +135,16 @@
 }
 
 /* Hero Section */
+/* undo the landing-page `section { padding: 96px 32px; margin: auto }` rule from index.css */
+.field-content section { padding: 0; max-width: none; margin-left: 0; margin-right: 0; }
+
 .field-hero {
-  margin-top: 12px;
-  margin-bottom: 24px;
+  margin-top: 8px;
+  margin-bottom: 16px;
 }
 .field-hero h1 {
   font-family: var(--font-editorial, serif);
-  font-size: 42px;
+  font-size: 30px;
   font-weight: 700;
   line-height: 1.1;
   letter-spacing: -0.02em;

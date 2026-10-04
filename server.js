@@ -2,7 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import sqlite3 from 'sqlite3';
+// Node's built-in SQLite (no native addon to compile — works on Vercel/Netlify as well as locally)
+import { DatabaseSync } from 'node:sqlite';
 import { detectionService } from './backend/detectionService.js';
 import dotenv from 'dotenv';
 import fs from 'fs';
@@ -84,71 +85,31 @@ function unknownResource(req, res) {
   res.status(404).json({ ok: false, error: { code: 'NOT_FOUND', message: `Unknown API resource "${req.params.resource}". If this is a new feature, restart the API server so it loads the latest routes.` } });
   return true;
 }
-const db = new sqlite3.Database(dbPath);
+const db = new DatabaseSync(dbPath);
 
 // Initialize DB schema
-db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS settings (
-    id TEXT PRIMARY KEY,
-    data TEXT
-  )`);
+db.exec('CREATE TABLE IF NOT EXISTS settings (id TEXT PRIMARY KEY, data TEXT)');
+for (const table of [...GENERIC_TABLES.filter((t) => t !== 'settings'), ...RETIRED_TABLES]) {
+  db.exec(`CREATE TABLE IF NOT EXISTS ${table} (id TEXT PRIMARY KEY, data TEXT)`);
+}
 
-  const tables = [...GENERIC_TABLES.filter((t) => t !== 'settings'), ...RETIRED_TABLES];
-
-
-  tables.forEach(table => {
-    db.run(`CREATE TABLE IF NOT EXISTS ${table} (
-      id TEXT PRIMARY KEY,
-      data TEXT
-    )`);
-  });
-});
-
-// Helper functions for DB operations wrapping sqlite3 in Promises
-const getRow = (table, id) => {
-  return new Promise((resolve, reject) => {
-    db.get(`SELECT data FROM ${table} WHERE id = ?`, [id], (err, row) => {
-      if (err) reject(err);
-      else resolve(row ? JSON.parse(row.data) : null);
-    });
-  });
+// Promise-returning helpers (same contract as before; the driver itself is synchronous)
+const getRow = async (table, id) => {
+  const row = db.prepare(`SELECT data FROM ${table} WHERE id = ?`).get(id);
+  return row ? JSON.parse(row.data) : null;
 };
 
-const getAllRows = (table) => {
-  return new Promise((resolve, reject) => {
-    db.all(`SELECT data FROM ${table}`, [], (err, rows) => {
-      if (err) reject(err);
-      else resolve(rows.map(row => JSON.parse(row.data)));
-    });
-  });
-};
+const getAllRows = async (table) =>
+  db.prepare(`SELECT data FROM ${table}`).all().map((row) => JSON.parse(row.data));
 
-const insertRow = (table, id, data) => {
-  return new Promise((resolve, reject) => {
-    db.run(`INSERT INTO ${table} (id, data) VALUES (?, ?)`, [id, JSON.stringify(data)], function (err) {
-      if (err) reject(err);
-      else resolve(this.lastID);
-    });
-  });
-};
+const insertRow = async (table, id, data) =>
+  Number(db.prepare(`INSERT INTO ${table} (id, data) VALUES (?, ?)`).run(id, JSON.stringify(data)).lastInsertRowid);
 
-const updateRow = (table, id, data) => {
-  return new Promise((resolve, reject) => {
-    db.run(`UPDATE ${table} SET data = ? WHERE id = ?`, [JSON.stringify(data), id], function (err) {
-      if (err) reject(err);
-      else resolve(this.changes);
-    });
-  });
-};
+const updateRow = async (table, id, data) =>
+  Number(db.prepare(`UPDATE ${table} SET data = ? WHERE id = ?`).run(JSON.stringify(data), id).changes);
 
-const deleteRow = (table, id) => {
-  return new Promise((resolve, reject) => {
-    db.run(`DELETE FROM ${table} WHERE id = ?`, [id], function (err) {
-      if (err) reject(err);
-      else resolve(this.changes);
-    });
-  });
-};
+const deleteRow = async (table, id) =>
+  Number(db.prepare(`DELETE FROM ${table} WHERE id = ?`).run(id).changes);
 
 const wsError = (res, code, message, status = 500) => res.status(status).json({ success: false, error: { code, message } });
 const wsResponse = (res, data, status = 200) => res.status(status).json({ success: true, data });

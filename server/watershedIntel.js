@@ -298,7 +298,7 @@ export async function callGeminiJSON({ prompt, image = null, timeoutMs = 60000 }
   const parts = image ? [{ inline_data: { mime_type: image.mimeType, data: image.base64 } }, { text: prompt }] : [{ text: prompt }];
   let lastErr = null;
   for (const m of models.slice(0, 3)) {
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
           method: 'POST',
@@ -309,7 +309,8 @@ export async function callGeminiJSON({ prompt, image = null, timeoutMs = 60000 }
         const body = await r.json().catch(() => null);
         if (!r.ok) {
           lastErr = { status: 'ERROR', reason: `AI provider returned HTTP ${r.status} for ${m}: ${body?.error?.message?.slice(0, 160) || 'no detail'}`, model: m };
-          if (r.status === 429 || r.status === 503) { await new Promise(res => setTimeout(res, 2500)); continue; }
+          // overloaded / rate-limited: back off (2 s, 5 s) and retry before moving to the next model
+          if (r.status === 429 || r.status === 503) { await new Promise(res => setTimeout(res, attempt ? 5000 : 2000)); continue; }
           break;
         }
         const text = body?.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';

@@ -25,6 +25,7 @@ import { useMapLayers } from '../Watershed/useMapLayers';
 import { WATERSHED_LAYERS, LAYER_IDS } from '../../shared/layerRegistry';
 import { evaluateEvidence } from '../../shared/evidenceStatus';
 import { evidenceService } from '../../services/evidenceService';
+import { saveLocalEvidence } from '../../services/localEvidence';
 import {
   Section, StatePill, EvidenceCards, EvidenceStatusBlock, FieldSection, SatelliteSection, TerrainSection,
   TimelineSection, AssessmentSection, BriefSection, PhotoViewer, fmtDate
@@ -220,7 +221,7 @@ export default function EvidenceReview() {
         scenes: s ? { baseline: s.baseline.acquisitionDate, current: s.current.acquisitionDate } : null
       });
       // the review is also kept as an evidence record so it shows up in the Evidence page
-      await evidenceService.create({
+      const reviewRecord = {
         id: `evidence-review-${Date.now()}`,
         type: 'INTERVENTION_REVIEW',
         interventionId: iv.id, interventionName: iv.name, interventionType: iv.type,
@@ -230,7 +231,9 @@ export default function EvidenceReview() {
         satellite: s ? { baseline: s.baseline.acquisitionDate, current: s.current.acquisitionDate, change: s.change } : null,
         fieldPhotos: ev.field.photoCount,
         createdAt: new Date().toISOString()
-      });
+      };
+      saveLocalEvidence(reviewRecord);                       // kept in this browser
+      await evidenceService.create(reviewRecord).catch(() => {}); // server copy is best-effort
       setReviewNonce((n) => n + 1);
     } catch (e) {
       window.alert(`Could not save review: ${e.message}`);

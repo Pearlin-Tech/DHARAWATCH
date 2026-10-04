@@ -1,4 +1,4 @@
-import sqlite3 from 'sqlite3';
+import { DatabaseSync } from 'node:sqlite';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -10,16 +10,9 @@ if (!fs.existsSync(DB_DIR)) {
   fs.mkdirSync(DB_DIR, { recursive: true });
 }
 const dbPath = path.join(DB_DIR, 'satquery.sqlite');
-const db = new sqlite3.Database(dbPath);
+const db = new DatabaseSync(dbPath);
 
-const runQuery = (query, params = []) => {
-  return new Promise((resolve, reject) => {
-    db.run(query, params, function (err) {
-      if (err) reject(err);
-      else resolve(this);
-    });
-  });
-};
+const runQuery = async (query, params = []) => db.prepare(query).run(...params);
 
 const insertRow = async (table, id, data) => {
   await runQuery(`INSERT OR REPLACE INTO ${table} (id, data) VALUES (?, ?)`, [id, JSON.stringify(data)]);
