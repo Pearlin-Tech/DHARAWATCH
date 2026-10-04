@@ -47,3 +47,11 @@ secrets/
 
 # Vercel CLI project link
 .vercel
+
+# AI assistant / planning tooling (not part of the app)
+.claude/
+.agents/
+.planning/
+skills-lock.json
+CLAUDE.md
+AGENTS.md

@@ -57,6 +57,7 @@ export default function MapViewport({
         attributionControl: false
       });
 
+      if (import.meta.env.DEV) window.__mv = [...(window.__mv || []), map.current];
       map.current.on('load', () => {
         if (onMapLoad) onMapLoad(map.current);
       });

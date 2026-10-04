@@ -94,10 +94,9 @@ DHARAWATCH/
 │   └── services/                 # Frontend API clients
 ├── server.js                     # Main Express API server
 ├── server-gee.js                 # Google Earth Engine integration
-├── server/
-│   ├── services/                 # AI explainer, geospatial analysis, watershed
-│   └── ...                       # Internal services
-└── .planning/                    # Project planning artifacts
+└── server/
+    ├── services/                 # AI explainer, geospatial analysis, watershed
+    └── ...                       # Internal services
 ```
 
 ---

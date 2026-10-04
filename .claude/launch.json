@@ -1,7 +1,0 @@
-{
-  "version": "0.0.1",
-  "configurations": [
-    { "name": "api", "runtimeExecutable": "env", "runtimeArgs": ["PORT=3011", "node", "server.js"], "port": 3011 },
-    { "name": "web", "runtimeExecutable": "env", "runtimeArgs": ["API_TARGET=http://localhost:3011", "npx", "vite", "--port", "5190", "--strictPort"], "port": 5190 }
-  ]
-}
