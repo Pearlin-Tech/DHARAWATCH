@@ -272,7 +272,7 @@ async function seed() {
   console.log('Seeding database with public data snapshots...');
 
   const tables = [
-    'watersheds', 'infrastructure_features', 'evidence_gaps'
+    'watersheds', 'infrastructure_features', 'evidence_gaps', 'interventions'
   ];
 
   for (const table of tables) {
@@ -293,6 +293,13 @@ async function seed() {
     await insertRow('evidence_gaps', gap.id, gap);
   }
   console.log(`Seeded ${evidenceGaps.length} evidence gaps.`);
+
+  // Demo interventions (Narmada) — INSERT OR IGNORE so local edits are never overwritten
+  const interventions = JSON.parse(fs.readFileSync(path.join(__dirname, 'seed-interventions.json'), 'utf8'));
+  for (const iv of interventions) {
+    await runQuery('INSERT OR IGNORE INTO interventions (id, data) VALUES (?, ?)', [iv.id, JSON.stringify(iv)]);
+  }
+  console.log(`Ensured ${interventions.length} demo interventions.`);
 
   console.log('Seed process completed successfully.');
   db.close();

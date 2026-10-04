@@ -1,0 +1,149 @@
+[
+  {
+    "id": "intervention-check-dam-1",
+    "watershedId": "hybas-4050031610",
+    "type": "Check Dam",
+    "name": "Sardar Sarovar Check Dam Network",
+    "coordinates": {
+      "lat": 21.83,
+      "lng": 73.74
+    },
+    "geometry": null,
+    "constructionDate": "2018-03-15T00:00:00.000Z",
+    "status": "OPERATIONAL",
+    "notes": "Series of 12 check dams along the Narmada main stem and tributaries for groundwater recharge.",
+    "photographs": [],
+    "inspections": [
+      {
+        "id": "insp-1",
+        "date": "2024-05-12T00:00:00.000Z",
+        "status": "COMPLETED",
+        "notes": "All structures intact. Good water retention observed.",
+        "inspector": "FIELD_TEAM"
+      },
+      {
+        "id": "insp-2",
+        "date": "2023-11-08T00:00:00.000Z",
+        "status": "COMPLETED",
+        "notes": "Minor sediment buildup in Dam #3. Cleared.",
+        "inspector": "FIELD_TEAM"
+      }
+    ],
+    "linkedMissionId": null,
+    "linkedObservationId": null,
+    "createdAt": "2026-10-02T16:56:12.050Z",
+    "updatedAt": "2026-10-02T16:56:12.050Z"
+  },
+  {
+    "id": "intervention-plantation-1",
+    "watershedId": "hybas-4050031610",
+    "type": "Plantation",
+    "name": "Shoolpaneshwar Riparian Buffer",
+    "coordinates": {
+      "lat": 21.8,
+      "lng": 73.7
+    },
+    "geometry": null,
+    "constructionDate": "2022-07-15T00:00:00.000Z",
+    "status": "OPERATIONAL",
+    "notes": "Riparian plantation along 12km of riverbank. Native species: Banyan, Peepal, Arjun, Neem.",
+    "photographs": [],
+    "inspections": [
+      {
+        "id": "insp-6",
+        "date": "2024-03-20T00:00:00.000Z",
+        "status": "COMPLETED",
+        "notes": "85% survival rate. Good canopy closure achieved.",
+        "inspector": "FOREST_DEPT"
+      }
+    ],
+    "linkedMissionId": null,
+    "linkedObservationId": null,
+    "createdAt": "2026-10-02T16:56:12.050Z",
+    "updatedAt": "2026-10-02T16:56:12.050Z"
+  },
+  {
+    "id": "intervention-percolation-tank-1",
+    "watershedId": "hybas-4050031610",
+    "type": "Percolation Tank",
+    "name": "Navagam Percolation Tank",
+    "coordinates": {
+      "lat": 21.9,
+      "lng": 73.78
+    },
+    "geometry": null,
+    "constructionDate": "2019-06-10T00:00:00.000Z",
+    "status": "NEEDS_REPAIR",
+    "notes": "Percolation tank with 15,000 m3 capacity. Outlet structure damaged during 2023 monsoon.",
+    "photographs": [],
+    "inspections": [
+      {
+        "id": "insp-4",
+        "date": "2024-02-15T00:00:00.000Z",
+        "status": "COMPLETED",
+        "notes": "Outlet pipe cracked. Requires replacement before monsoon.",
+        "inspector": "FIELD_TEAM"
+      }
+    ],
+    "linkedMissionId": null,
+    "linkedObservationId": "field-1790700022371-10yfv",
+    "createdAt": "2026-10-02T16:56:12.050Z",
+    "updatedAt": "2026-10-02T16:56:12.050Z"
+  },
+  {
+    "id": "intervention-recharge-structure-1",
+    "watershedId": "hybas-4050031610",
+    "type": "Recharge Structure",
+    "name": "Narmada Canal Recharge Shafts",
+    "coordinates": {
+      "lat": 21.88,
+      "lng": 73.76
+    },
+    "geometry": null,
+    "constructionDate": "2021-09-01T00:00:00.000Z",
+    "status": "COMPLETED",
+    "notes": "5 recharge shafts along the Narmada Main Canal for aquifer recharge. Monitoring wells installed.",
+    "photographs": [],
+    "inspections": [
+      {
+        "id": "insp-5",
+        "date": "2024-06-01T00:00:00.000Z",
+        "status": "COMPLETED",
+        "notes": "All shafts functional. Water levels rising in observation wells.",
+        "inspector": "GW_BOARD"
+      }
+    ],
+    "linkedMissionId": null,
+    "linkedObservationId": null,
+    "createdAt": "2026-10-02T16:56:12.050Z",
+    "updatedAt": "2026-10-02T16:56:12.050Z"
+  },
+  {
+    "id": "intervention-farm-pond-1",
+    "watershedId": "hybas-4050031610",
+    "type": "Farm Pond",
+    "name": "Kevadia Farm Pond Cluster",
+    "coordinates": {
+      "lat": 21.85,
+      "lng": 73.72
+    },
+    "geometry": null,
+    "constructionDate": "2020-01-20T00:00:00.000Z",
+    "status": "OPERATIONAL",
+    "notes": "Cluster of 8 farm ponds serving 45 hectares of agricultural land. Community managed.",
+    "photographs": [],
+    "inspections": [
+      {
+        "id": "insp-3",
+        "date": "2024-04-22T00:00:00.000Z",
+        "status": "COMPLETED",
+        "notes": "All ponds holding water. Inlet structures functional.",
+        "inspector": "COMMUNITY_REP"
+      }
+    ],
+    "linkedMissionId": null,
+    "linkedObservationId": null,
+    "createdAt": "2026-10-02T16:56:12.050Z",
+    "updatedAt": "2026-10-04T11:05:54.635Z"
+  }
+]

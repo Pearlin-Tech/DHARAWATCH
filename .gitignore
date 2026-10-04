@@ -44,3 +44,6 @@ secrets/
 # Local Netlify folder
 .netlify
 .env.local
+
+# Vercel CLI project link
+.vercel

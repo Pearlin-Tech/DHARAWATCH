@@ -73,10 +73,16 @@ export default function Watershed() {
   const activationSeq = useRef(0);
 
   // ─── panels ─────────────────────────────────────────────────────
-  const [panels, setPanels] = useState(() => Object.fromEntries(PANEL_IDS.map((id, i) => [id, { open: PANELS[id].open, z: 30 + i }])));
+  // phones: panels dock as a bottom sheet (responsive.css), so start closed and keep one open at a time
+  const isPhone = typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches;
+  const [panels, setPanels] = useState(() => Object.fromEntries(PANEL_IDS.map((id, i) => [id, { open: isPhone ? false : PANELS[id].open, z: 30 + i }])));
   const zTop = useRef(40);
   const bringToFront = useCallback((id) => setPanels((p) => (!p[id] || p[id].z === zTop.current ? p : { ...p, [id]: { ...p[id], z: ++zTop.current } })), []);
-  const togglePanel = useCallback((id, force) => setPanels((p) => ({ ...p, [id]: { ...p[id], open: force ?? !p[id].open, z: ++zTop.current } })), []);
+  const togglePanel = useCallback((id, force) => setPanels((p) => {
+    const open = force ?? !p[id].open;
+    const next = isPhone && open ? Object.fromEntries(Object.entries(p).map(([k, v]) => [k, { ...v, open: false }])) : { ...p };
+    return { ...next, [id]: { ...p[id], open, z: ++zTop.current } };
+  }), [isPhone]);
   const [detailMode, setDetailMode] = useState('normal');
 
   // ─── records ────────────────────────────────────────────────────

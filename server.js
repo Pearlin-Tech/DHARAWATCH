@@ -60,6 +60,13 @@ if (!fs.existsSync(DB_DIR)) {
 }
 
 const dbPath = path.join(DB_DIR, 'satquery.sqlite');
+const IS_SERVERLESS = !!(process.env.VERCEL || process.env.NETLIFY);
+// Serverless: the bundle is read-only and /tmp starts empty on every cold start. Start from the database
+// seeded during the build (npm postinstall → scripts/seed-public-data.js) so demo data exists.
+if (IS_SERVERLESS && !fs.existsSync(dbPath)) {
+  const bundled = path.join(__dirname, 'server-data', 'satquery.sqlite');
+  try { if (fs.existsSync(bundled)) fs.copyFileSync(bundled, dbPath); } catch (e) { console.warn('[DB] could not copy bundled database:', e.message); }
+}
 
 // Tables reachable through the generic /api/:resource routes. Anything else is a 404 —
 // the resource name is interpolated into SQL, so it must never come from an unchecked URL.
@@ -1846,7 +1853,11 @@ async function migrateLegacyWatershedIds() {
   }
 }
 
-if (!process.env.VERCEL && !process.env.NETLIFY) {
+if (IS_SERVERLESS) {
+  // no app.listen() on serverless — run the same startup work once per cold start
+  ensureSeeds();
+  migrateLegacyWatershedIds().catch(e => console.warn('[Migrate] watershed id migration failed:', e.message));
+} else {
   const server = app.listen(PORT, () => {
     console.log(`Local authoritative server running on http://localhost:${PORT} with SQLite backend`);
     ensureSeeds();

@@ -14,7 +14,9 @@ const __dirname = path.dirname(__filename);
 
 // ─── File Storage ──────────────────────────────────────────────────
 const ROOT = process.env.FIELD_DATA_DIR
-  || path.join(path.dirname(__dirname), 'server-data', 'field');
+  || ((process.env.VERCEL || process.env.NETLIFY)
+    ? path.join('/tmp', 'server-data', 'field')            // serverless bundle is read-only
+    : path.join(path.dirname(__dirname), 'server-data', 'field'));
 
 /**
  * Records store absolute paths; if the project folder was moved/renamed those go stale.

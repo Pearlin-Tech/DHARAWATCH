@@ -1,0 +1,144 @@
+/* DHARAWATCH — small-screen layout.
+   Loaded after every page stylesheet (main.jsx). Desktop is untouched; below 768px:
+   - the global nav rail becomes a bottom tab bar (--mnav-h tall)
+   - panels that were positioned for a 120px desktop rail are re-flowed to full width
+   - floating panels dock as a bottom sheet */
+
+:root { --mnav-h: 0px; }
+
+@media (max-width: 768px) {
+  :root { --mnav-h: 64px; }
+
+  /* ── global nav rail → bottom tab bar (AppNavigation + Explore's own rail) ── */
+  .explore-nav-rail {
+    top: auto !important;
+    left: 8px !important;
+    right: 8px !important;
+    bottom: 8px !important;
+    width: auto !important;          /* framer-motion animates width inline */
+    height: 52px;
+    flex-direction: row !important;
+    align-items: center;
+    padding: 0 4px !important;
+    border-radius: 14px !important;
+    z-index: 1000 !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    scrollbar-width: none;
+    position: fixed !important;
+  }
+  .explore-nav-rail::-webkit-scrollbar { display: none; }
+  .explore-nav-rail .nav-rail-header,
+  .explore-nav-rail .nav-label { display: none !important; }
+  .explore-nav-rail .nav-rail-links,
+  .explore-nav-rail .nav-rail-bottom {
+    flex-direction: row !important;
+    flex: 0 0 auto !important;
+    gap: 2px !important;
+    align-items: center;
+  }
+  .explore-nav-rail .nav-rail-links { flex: 1 0 auto !important; justify-content: space-around; }
+  .explore-nav-rail .nav-item {
+    width: auto !important;
+    padding: 10px 12px !important;
+    border-left: none !important;
+    border-radius: 10px;
+    justify-content: center;
+  }
+  .explore-nav-rail .nav-item.active { background: rgba(37, 99, 235, 0.2) !important; color: #fff; }
+
+  /* ── floating panels (Watershed) → bottom sheet ── */
+  .floating-panel-container {
+    position: fixed !important;
+    left: 8px !important;
+    right: 8px !important;
+    top: auto !important;
+    bottom: calc(var(--mnav-h) + 60px) !important;
+    width: auto !important;
+    min-width: 0 !important;
+    max-height: 52vh !important;
+    transform: none !important;       /* no dragging on touch screens */
+  }
+
+  /* ── Watershed ── */
+  .map-viewport { inset: 0 !important; }
+  .ws-cmd { left: 8px !important; right: 8px !important; top: 8px !important; gap: 6px !important; }
+  .ws-search { flex: 1 1 100% !important; min-width: 0 !important; }
+  .ws-search-results { width: calc(100vw - 16px) !important; }
+  .ws-menu, .ws-menu.wide { width: min(290px, calc(100vw - 24px)) !important; }
+  .ws-action-dock {
+    left: 8px !important; right: 8px !important; transform: none !important;
+    bottom: calc(var(--mnav-h) + 6px) !important; max-width: none !important;
+  }
+  .ws-zoom-controls { bottom: calc(var(--mnav-h) + 64px) !important; right: 10px !important; }
+  .ws-welcome { max-width: calc(100vw - 32px) !important; }
+
+  /* ── Explore ── */
+  .top-command-bar { left: 8px !important; right: 8px !important; top: 8px !important; flex-wrap: wrap; gap: 6px; }
+  .top-command-bar .search-box { width: 100% !important; }
+  .bottom-status-bar { display: none !important; }   /* lat/lon/zoom readout — no room on a phone */
+  .floating-ai-btn { left: 50% !important; right: auto !important; transform: translateX(-50%) !important; bottom: calc(var(--mnav-h) + 12px) !important; }
+  .zoom-controls, .map-controls { bottom: calc(var(--mnav-h) + 70px) !important; }
+  .ai-copilot-window { left: 8px !important; right: 8px !important; width: auto !important; max-width: none !important; bottom: calc(var(--mnav-h) + 8px) !important; }
+
+  /* ── Field ── */
+  .field-content { margin-left: 0 !important; padding: 12px 12px calc(var(--mnav-h) + 16px) !important; }
+  .field-header-row, .field-status-strip, .field-actions { flex-wrap: wrap !important; gap: 8px !important; }
+
+  /* ── Compare ── */
+  .compare-top-bar {
+    left: 8px !important; right: 8px !important; top: 8px !important;
+    flex-direction: column; align-items: stretch !important; gap: 8px; padding: 10px 12px !important;
+  }
+  .compare-top-bar > div { flex-wrap: wrap; gap: 10px !important; }
+  .compare-container .layer-label { top: auto !important; bottom: calc(var(--mnav-h) + 150px); left: 8px !important; }
+  .compare-container .layer-label.right { left: auto !important; right: 8px !important; }
+  .compare-timeline { left: 8px !important; right: 8px !important; bottom: calc(var(--mnav-h) + 8px) !important; padding: 10px !important; }
+  .compare-result-panel { left: 8px !important; right: 8px !important; width: auto !important; top: auto !important; bottom: calc(var(--mnav-h) + 150px) !important; max-height: 26vh !important; overflow-y: auto; }
+  .compare-container .layer-label { display: none; }
+
+  /* ── Ask ── */
+  .ask-top-bar { left: 8px !important; right: 8px !important; min-width: 0 !important; flex-wrap: wrap; }
+  .ask-bottom-center { left: 8px !important; right: 8px !important; transform: none !important; width: auto !important; bottom: calc(var(--mnav-h) + 8px) !important; }
+  .evidence-drawer { width: 100% !important; }
+  .draw-invite { flex-wrap: wrap !important; min-width: 0 !important; width: auto !important; }
+  .draw-invite > .flex-1 { flex: 1 1 calc(100% - 64px) !important; }
+  .draw-invite > button { flex: 1 1 100% !important; justify-content: center; }
+
+  /* ── Detect ── */
+  .detect-toolbar { left: 8px !important; right: 8px !important; width: auto !important; top: 8px !important; }
+  .detect-debug-bar { left: 8px !important; right: 8px !important; bottom: calc(var(--mnav-h) + 8px) !important; overflow-x: auto; }
+  .detect-container [class*="top-bar"], .detect-container [class*="status"] { min-width: 0 !important; }
+
+  /* ── Timeline / Measure / Area ── */
+  .timeline-top-controls, .timeline-bottom-controls { left: 8px !important; right: 8px !important; flex-wrap: wrap; }
+  .timeline-bottom-controls { bottom: calc(var(--mnav-h) + 8px) !important; overflow: hidden; }
+  .timeline-bottom-controls > * { min-width: 0; max-width: 100%; }
+  .event-inspector-panel { left: 8px !important; right: 8px !important; width: auto !important; }
+  .measure-result-panel, .area-result-panel {
+    left: 8px !important; right: 8px !important; width: auto !important; bottom: calc(var(--mnav-h) + 8px) !important;
+  }
+
+  /* ── pages that pushed content right of the rail ── */
+  .watch-main-content, .reports-container, .report-detail-container, .settings-container,
+  [class*="-main-content"] { margin-left: 0 !important; padding-bottom: calc(var(--mnav-h) + 16px) !important; }
+  .watch-side-panel, .watch-form-panel { width: 100% !important; }
+  /* wide data tables scroll sideways instead of squeezing */
+  .reports-list { overflow-x: auto; }
+  .reports-list-header, .report-row { min-width: 760px; }
+  .watch-table { display: block; overflow-x: auto; }
+  .watch-table > * { min-width: 720px; }
+  .settings-row { flex-direction: column !important; align-items: stretch !important; gap: 10px !important; }
+  .settings-control, .settings-control > * { width: 100% !important; max-width: 100% !important; }
+  .settings-tabs { overflow-x: auto; flex-wrap: nowrap !important; }
+  .settings-container, .reports-container, .report-detail-container { padding-left: 16px !important; padding-right: 16px !important; }
+  .watch-detail-layout, .watch-new-layout { flex-direction: column !important; }
+
+  /* ── Evidence / Evidence Review: leave room for the tab bar ── */
+  .evd-page { padding-bottom: calc(var(--mnav-h) + 8px) !important; }
+  .er-page { padding-bottom: calc(var(--mnav-h) + 8px) !important; }
+  .er-page .explore-nav-rail, .evd-page .explore-nav-rail { display: flex !important; }
+
+  /* generic safety: nothing wider than the screen */
+  img, video, canvas, table { max-width: 100%; }
+}

@@ -228,9 +228,20 @@ npm run build
 # Output in ./dist
 ```
 
-### Serverless (Vercel/Netlify)
-The `server.js` exports the Express app for serverless deployment.
-Configure environment variables in your platform dashboard.
+### Vercel
+`vercel.json` builds the Vite frontend into `dist/` and serves the whole Express API from one function (`api/index.js`); `/api/*` goes to the function, every other path to the React app.
+
+1. Import the GitHub repo in Vercel (framework is detected from `vercel.json`).
+2. **Settings → Environment Variables** — add `EARTH_ENGINE_PROJECT_ID`, `EARTH_ENGINE_CLIENT_EMAIL`, `EARTH_ENGINE_PRIVATE_KEY` (paste with `\n` line breaks), `AI_API_KEY`, and `VITE_GOOGLE_MAPS_API_KEY` (used at build time, so redeploy after changing it).
+3. Deploy. Node 20+ is used (from `package.json` `engines`).
+
+Serverless limits to know:
+- **Data is not permanent on Vercel.** SQLite lives in `/tmp`: each cold start begins from the demo database built during deploy (watersheds, evidence gaps, the 5 Narmada interventions). Records created on the deployed site (field photos, evidence, reviews) disappear when the function restarts and are not shared between instances. Use the local server for data you need to keep, or move storage to a hosted database.
+- Uploads are limited to ~4.5 MB per request (Vercel body limit).
+- Earth Engine requests can take a while; the function allows up to 300 s (`maxDuration`), which needs Fluid compute (default on new projects) — lower it to 60 if your plan rejects 300.
+
+### Netlify
+`netlify.toml` + `netlify/functions/api.js` wrap the same Express app; the same environment variables and data limits apply.
 
 ---
 
