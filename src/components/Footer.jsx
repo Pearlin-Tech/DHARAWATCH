@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import './Footer.css';
 
 export default function Footer() {
@@ -17,22 +18,17 @@ export default function Footer() {
           <div className="footer-links">
             <div className="link-group">
               <h4 className="font-mono text-xs">PRODUCT</h4>
-              <a href="#">Capabilities</a>
-              <a href="#">Data Sources</a>
-              <a href="#">Documentation</a>
-              <a href="#">Pricing</a>
+              <Link to="/explore">Explore</Link>
+              <Link to="/watershed">Watershed</Link>
+              <Link to="/field">Field</Link>
+              <Link to="/evidence-review">Evidence Review</Link>
             </div>
             <div className="link-group">
-              <h4 className="font-mono text-xs">COMPANY</h4>
-              <a href="#">About</a>
-              <a href="#">Careers</a>
-              <a href="#">Contact</a>
-            </div>
-            <div className="link-group">
-              <h4 className="font-mono text-xs">RESOURCES</h4>
-              <a href="#">Blog</a>
-              <a href="#">Research</a>
-              <a href="#">API</a>
+              <h4 className="font-mono text-xs">WORKSPACE</h4>
+              <Link to="/ask">Ask</Link>
+              <Link to="/compare">Compare</Link>
+              <Link to="/evidence">Evidence</Link>
+              <Link to="/settings">Settings</Link>
             </div>
           </div>
         </div>
@@ -40,11 +36,6 @@ export default function Footer() {
         <div className="footer-bottom">
           <div className="text-xs text-gray">
             &copy; {new Date().getFullYear()} DHARAWATCH. All rights reserved.
-          </div>
-          <div className="footer-legal">
-            <a href="#" className="text-xs text-gray">Privacy Policy</a>
-            <a href="#" className="text-xs text-gray">Terms of Service</a>
-            <a href="#" className="text-xs text-gray">Security</a>
           </div>
         </div>
       </div>

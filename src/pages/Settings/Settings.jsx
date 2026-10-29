@@ -1,130 +1,218 @@
-import React, { useState, useEffect } from 'react';
-import { Download, CheckCircle2 } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Download, CheckCircle2, AlertTriangle, RefreshCw, Trash2, ExternalLink } from 'lucide-react';
 import AppNavigation from '../../components/AppNavigation';
-import { settingsService } from '../../services/settingsService';
+import { settingsService, DEFAULT_SETTINGS, BASEMAPS } from '../../services/settingsService';
+import { listSaved, deleteSaved } from '../../services/watershedClient';
 import './Settings.css';
 
-export default function Settings() {
-  const [activeTab, setActiveTab] = useState('Profile');
-  const tabs = ['Profile', 'Map', 'Notifications', 'Saved Locations', 'Field Mode', 'Appearance'];
+const TABS = ['Profile', 'Map', 'Saved Watersheds', 'System'];
 
-  const [settings, setSettings] = useState({
-    autoFetchHighRes: true,
-    elevationContour: false,
-    surfaceAlerts: true,
-    passPredictions: true,
-    auditLogs: true,
-    lowBandwidth: false,
-    highContrast: false,
-    monoFont: true,
-    theme: 'Dark (Default)',
-    accent: 'Electric Cyan'
-  });
-  
-  const [saveStatus, setSaveStatus] = useState('All changes auto-saved to local backend');
+// Browser-side caches this app writes; cleared by "Clear local data".
+const LOCAL_KEYS = ['dharawatch_settings', 'dharawatch_selectedFeature', 'satquery_ai_mode', 'drishtiWatchCopilotPosition'];
+
+async function probe(url) {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(20000) });
+    const json = await res.json().catch(() => null);
+    if (res.ok && json?.ok !== false) return { state: 'ok', detail: null };
+    return { state: 'down', detail: json?.error?.message || json?.error || `HTTP ${res.status}` };
+  } catch (e) {
+    return { state: 'down', detail: e.name === 'TimeoutError' ? 'No response after 20 s' : e.message };
+  }
+}
+
+export default function Settings() {
+  const navigate = useNavigate();
+  const [activeTab, setActiveTab] = useState('Profile');
+  const [settings, setSettings] = useState(() => settingsService.getLocal());
+  const [saveStatus, setSaveStatus] = useState({ tone: 'ok', text: 'Loading settings…' });
+  const saveTimer = useRef(null);
+
+  const [saved, setSaved] = useState({ status: 'idle', items: [], error: null });
+  const [health, setHealth] = useState({ api: null, earthEngine: null, checking: false });
 
   useEffect(() => {
-    settingsService.get().then(data => {
-      if (data) setSettings(data);
+    settingsService.get().then(({ settings: s, synced }) => {
+      setSettings(s);
+      setSaveStatus(synced
+        ? { tone: 'ok', text: 'Settings synced with server' }
+        : { tone: 'warn', text: 'Server unreachable — using settings stored in this browser' });
     });
   }, []);
 
-  const saveSettings = async (newSettings) => {
-    setSaveStatus('Saving to backend...');
+  const persist = useCallback((next) => {
+    setSaveStatus({ tone: 'ok', text: 'Saving…' });
+    clearTimeout(saveTimer.current);
+    // debounce so typing in text fields doesn't post on every keystroke
+    saveTimer.current = setTimeout(async () => {
+      const ok = await settingsService.update(next);
+      setSaveStatus(ok
+        ? { tone: 'ok', text: 'All changes saved' }
+        : { tone: 'warn', text: 'Saved in this browser only — server unreachable' });
+    }, 400);
+  }, []);
+
+  useEffect(() => () => clearTimeout(saveTimer.current), []);
+
+  const updateSetting = (key, value) => {
+    const next = { ...settings, [key]: value };
+    setSettings(next);
+    persist(next);
+  };
+
+  const loadSaved = useCallback(() => {
+    setSaved((s) => ({ ...s, status: 'loading', error: null }));
+    listSaved()
+      .then((items) => setSaved({ status: 'done', items, error: null }))
+      .catch((e) => setSaved({ status: 'error', items: [], error: e.message }));
+  }, []);
+
+  const checkHealth = useCallback(async () => {
+    setHealth((h) => ({ ...h, checking: true }));
+    const [api, earthEngine] = await Promise.all([probe('/api/health'), probe('/api/earth-engine/health')]);
+    setHealth({ api, earthEngine, checking: false });
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'Saved Watersheds' && saved.status === 'idle') loadSaved();
+    if (activeTab === 'System' && !health.api && !health.checking) checkHealth();
+  }, [activeTab, saved.status, health.api, health.checking, loadSaved, checkHealth]);
+
+  const removeSaved = async (item) => {
+    if (!window.confirm(`Delete saved watershed "${item.name}"? This cannot be undone.`)) return;
     try {
-      await settingsService.update(newSettings);
-      setSaveStatus('All changes auto-saved to local backend');
+      await deleteSaved(item.id);
+      setSaved((s) => ({ ...s, items: s.items.filter((i) => i.id !== item.id) }));
     } catch (e) {
-      setSaveStatus('Failed to save to backend');
+      window.alert(`Could not delete: ${e.message}`);
     }
   };
 
-  const toggleSetting = (key) => {
-    const newSettings = { ...settings, [key]: !settings[key] };
-    setSettings(newSettings);
-    saveSettings(newSettings);
+  const resetDefaults = () => {
+    if (!window.confirm('Reset all settings to their defaults?')) return;
+    setSettings({ ...DEFAULT_SETTINGS });
+    persist({ ...DEFAULT_SETTINGS });
   };
-  
-  const updateSetting = (key, value) => {
-    const newSettings = { ...settings, [key]: value };
-    setSettings(newSettings);
-    saveSettings(newSettings);
+
+  const exportConfig = () => {
+    const blob = new Blob([JSON.stringify(settings, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'dharawatch-settings.json';
+    a.click();
+    URL.revokeObjectURL(url);
   };
+
+  const clearLocalData = () => {
+    if (!window.confirm('Clear settings and cached workspace state stored in this browser? Saved watersheds and evidence on the server are not affected.')) return;
+    try { LOCAL_KEYS.forEach((k) => localStorage.removeItem(k)); } catch (_) { /* storage unavailable */ }
+    setSettings({ ...DEFAULT_SETTINGS });
+    setSaveStatus({ tone: 'ok', text: 'Local browser data cleared' });
+  };
+
+  const numberSetting = (key) => (e) => {
+    const v = e.target.value;
+    // keep the raw string while editing; sanitize() rejects out-of-range values on save
+    updateSetting(key, v === '' ? '' : Number(v));
+  };
+
+  const statusRow = (label, desc, result) => (
+    <div className="settings-row">
+      <div className="settings-row-content">
+        <h4>{label}</h4>
+        <p>{result?.state === 'down' && result.detail ? result.detail : desc}</p>
+      </div>
+      <div className="settings-control">
+        <span className={`settings-status ${result ? result.state : 'pending'}`}>
+          {!result ? 'Checking…' : result.state === 'ok' ? 'Online' : 'Unavailable'}
+        </span>
+      </div>
+    </div>
+  );
 
   return (
     <div className="settings-container">
       <AppNavigation />
-      
+
       <div className="settings-main-content">
         <div className="settings-inner">
-          
+
           <div className="text-[10px] font-mono text-accent-blue uppercase tracking-widest flex items-center gap-2 mb-4">
             PREFERENCES & ENVIRONMENT
           </div>
-          
+
           <div className="settings-header">
             <h1 className="settings-title">Settings</h1>
             <p className="settings-sub">
-              Manage your analyst account, geospatial map defaults, notifications, and field display behavior.
+              Workspace defaults, saved watersheds and service status.
             </p>
           </div>
 
-          <div className="settings-tabs">
-            {tabs.map(tab => (
-              <div 
-                key={tab} 
+          <div className="settings-tabs" role="tablist">
+            {TABS.map(tab => (
+              <button
+                key={tab}
+                role="tab"
+                aria-selected={activeTab === tab}
                 className={`settings-tab ${activeTab === tab ? 'active' : ''}`}
                 onClick={() => setActiveTab(tab)}
               >
                 {tab}
-              </div>
+              </button>
             ))}
           </div>
 
           {activeTab === 'Profile' && (
             <div className="settings-section">
-              <h3 className="settings-section-title">Profile & Credentials</h3>
-              <p className="settings-section-desc">Personal operational identity and authentication credentials.</p>
-              
+              <h3 className="settings-section-title">Profile</h3>
+              <p className="settings-section-desc">How your saved reviews are attributed. Stored with your settings.</p>
+
               <div className="settings-row">
                 <div className="settings-row-content">
-                  <h4>Full Name</h4>
-                  <p>Your identity as logged in orbital access logs.</p>
+                  <h4>Display Name</h4>
+                  <p>Recorded as the reviewer on Evidence Reviews you save.</p>
                 </div>
                 <div className="settings-control">
-                  <input type="text" className="settings-input" defaultValue="Elena Rostova" />
+                  <input
+                    type="text"
+                    className="settings-input"
+                    placeholder="Your name"
+                    value={settings.displayName}
+                    maxLength={80}
+                    onChange={(e) => updateSetting('displayName', e.target.value)}
+                  />
                 </div>
               </div>
 
               <div className="settings-row">
                 <div className="settings-row-content">
-                  <h4>Call Sign / Operator ID</h4>
-                  <p>Tactical deployment unit and operational clearance.</p>
+                  <h4>Organization</h4>
+                  <p>Team, department or agency.</p>
                 </div>
                 <div className="settings-control">
-                  <div className="text-[10px] font-mono bg-white/5 border border-white/10 px-3 py-2 rounded text-gray-dim uppercase">
-                    OP-8841 · Rhone Field Team
+                  <input
+                    type="text"
+                    className="settings-input"
+                    placeholder="Organization"
+                    value={settings.organization}
+                    maxLength={80}
+                    onChange={(e) => updateSetting('organization', e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="settings-row">
+                <div className="settings-row-content">
+                  <h4>Default AI Mode</h4>
+                  <p>Starting mode for Ask and the Explore copilot. Explorer gives plain-language answers; Expert adds technical detail.</p>
+                </div>
+                <div className="settings-control">
+                  <div className="settings-theme-selector">
+                    <button className={settings.aiMode === 'explorer' ? 'active' : ''} onClick={() => updateSetting('aiMode', 'explorer')}>Explorer</button>
+                    <button className={settings.aiMode === 'expert' ? 'active' : ''} onClick={() => updateSetting('aiMode', 'expert')}>Expert</button>
                   </div>
-                </div>
-              </div>
-
-              <div className="settings-row">
-                <div className="settings-row-content">
-                  <h4>Work Email</h4>
-                  <p>Destination for telemetry digests and security dispatches.</p>
-                </div>
-                <div className="settings-control">
-                  <input type="text" className="settings-input" defaultValue="elena.rostova@orbital-intelligence.eu" />
-                </div>
-              </div>
-
-              <div className="settings-row">
-                <div className="settings-row-content">
-                  <h4>Security Key & Two-Factor</h4>
-                  <p>Hardware FIDO2 Security Key enrolled.</p>
-                </div>
-                <div className="settings-control">
-                  <button className="settings-button">Update Key</button>
                 </div>
               </div>
             </div>
@@ -132,272 +220,129 @@ export default function Settings() {
 
           {activeTab === 'Map' && (
             <div className="settings-section">
-              <h3 className="settings-section-title">Map & Sensor Defaults</h3>
-              <p className="settings-section-desc">Coordinate baselines and multi-spectral sensor pipeline behaviors.</p>
-              
+              <h3 className="settings-section-title">Map Defaults</h3>
+              <p className="settings-section-desc">Applied when the Explore map opens.</p>
+
               <div className="settings-row">
                 <div className="settings-row-content">
-                  <h4>Default Map Style</h4>
-                  <p>Initial basemap rendering engine on session bootstrap.</p>
+                  <h4>Default Basemap</h4>
+                  <p>Base imagery shown on Explore. Can still be switched from the Layers panel.</p>
                 </div>
                 <div className="settings-control">
-                  <select className="settings-select">
-                    <option>Multispectral Dark (Sentinel-2 Native)</option>
-                    <option>Optical True Color</option>
-                    <option>High Contrast Vector</option>
+                  <select className="settings-select" value={settings.basemap} onChange={(e) => updateSetting('basemap', e.target.value)}>
+                    {Object.entries(BASEMAPS).map(([id, b]) => <option key={id} value={id}>{b.label}</option>)}
                   </select>
                 </div>
               </div>
 
               <div className="settings-row">
                 <div className="settings-row-content">
-                  <h4>Default Coordinate System</h4>
-                  <p>Global spatial reference system for cursor readout and AOIs.</p>
+                  <h4>Start Location</h4>
+                  <p>Latitude and longitude (WGS 84, decimal degrees) the map centers on.</p>
                 </div>
-                <div className="settings-control">
-                  <select className="settings-select">
-                    <option>WGS 84 / UTM Projected (Automatic)</option>
-                    <option>WGS 84 (EPSG:4326)</option>
-                    <option>Web Mercator (EPSG:3857)</option>
-                  </select>
+                <div className="settings-control settings-control-pair">
+                  <input type="number" className="settings-input" step="0.0001" min="-90" max="90" aria-label="Start latitude" value={settings.startLat} onChange={numberSetting('startLat')} />
+                  <input type="number" className="settings-input" step="0.0001" min="-180" max="180" aria-label="Start longitude" value={settings.startLon} onChange={numberSetting('startLon')} />
                 </div>
               </div>
 
               <div className="settings-row">
                 <div className="settings-row-content">
-                  <h4>Auto-fetch High Resolution Imagery</h4>
-                  <p>Request sub-50cm commercial tiles upon zoom depths &gt; 16.</p>
+                  <h4>Start Zoom</h4>
+                  <p>1 = whole world, 20 = individual buildings.</p>
                 </div>
                 <div className="settings-control">
-                  <div className={`settings-toggle ${settings.autoFetchHighRes ? 'active' : ''}`} onClick={() => toggleSetting('autoFetchHighRes')}>
-                    <div className="settings-toggle-thumb"></div>
-                  </div>
-                </div>
-              </div>
-              
-              <div className="settings-row">
-                <div className="settings-row-content">
-                  <h4>Elevation Contour Overlay</h4>
-                  <p>Render SRTM/Copernicus DEM 10m topographic index vectors.</p>
-                </div>
-                <div className="settings-control">
-                  <div className={`settings-toggle ${settings.elevationContour ? 'active' : ''}`} onClick={() => toggleSetting('elevationContour')}>
-                    <div className="settings-toggle-thumb"></div>
-                  </div>
+                  <input type="number" className="settings-input settings-input-short" min="1" max="20" step="1" value={settings.startZoom} onChange={numberSetting('startZoom')} />
                 </div>
               </div>
             </div>
           )}
 
-          {activeTab === 'Notifications' && (
+          {activeTab === 'Saved Watersheds' && (
             <div className="settings-section">
-              <h3 className="settings-section-title">Notifications & Alert Triggers</h3>
-              <p className="settings-section-desc">Automated alarms for sensor anomalies, pass-bys, and vector deltas.</p>
-              
-              <div className="settings-row">
-                <div className="settings-row-content">
-                  <h4>Surface Change Alerts</h4>
-                  <p>Immediate notification when a watched envelope breaches threshold.</p>
-                </div>
-                <div className="settings-control">
-                  <div className={`settings-toggle ${settings.surfaceAlerts ? 'active' : ''}`} onClick={() => toggleSetting('surfaceAlerts')}>
-                    <div className="settings-toggle-thumb"></div>
-                  </div>
-                </div>
-              </div>
-              
-              <div className="settings-row">
-                <div className="settings-row-content">
-                  <h4>Satellite Pass Predictions</h4>
-                  <p>Digest 2 hours prior to orbital revisit.</p>
-                </div>
-                <div className="settings-control">
-                  <div className={`settings-toggle ${settings.passPredictions ? 'active' : ''}`} onClick={() => toggleSetting('passPredictions')}>
-                    <div className="settings-toggle-thumb"></div>
-                  </div>
-                </div>
-              </div>
-              
-              <div className="settings-row">
-                <div className="settings-row-content">
-                  <h4>Critical Audit Logs</h4>
-                  <p>Security and mission-authorization events across organization nodes.</p>
-                </div>
-                <div className="settings-control">
-                  <div className={`settings-toggle ${settings.auditLogs ? 'active' : ''}`} onClick={() => toggleSetting('auditLogs')}>
-                    <div className="settings-toggle-thumb"></div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="settings-row">
-                <div className="settings-row-content">
-                  <h4>Notification Delivery</h4>
-                  <p>Primary routing endpoint for urgent sensor triggers.</p>
-                </div>
-                <div className="settings-control">
-                  <select className="settings-select">
-                    <option>In-app banner & secure email</option>
-                    <option>In-app banner only</option>
-                    <option>Secure email only</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {activeTab === 'Saved Locations' && (
-            <div className="settings-section">
-              <div className="flex justify-between items-center mb-6">
+              <div className="settings-section-head">
                 <div>
-                  <h3 className="settings-section-title">Saved Locations</h3>
-                  <p className="settings-section-desc mb-0">Persistent areas of interest and continuous surveillance targets.</p>
+                  <h3 className="settings-section-title">Saved Watersheds</h3>
+                  <p className="settings-section-desc">Watersheds and custom areas saved from the Watershed workspace.</p>
                 </div>
-                <button className="settings-button text-accent-blue border-accent-blue/30">+ Add Location</button>
+                <button className="settings-button" onClick={() => navigate('/watershed')}>+ Add from Watershed</button>
               </div>
-              
-              <div className="settings-row">
-                <div className="settings-row-content">
-                  <h4 className="flex items-center gap-2">Camargue Estuary Delta <div className="w-1.5 h-1.5 bg-success-mint rounded-full"></div></h4>
-                  <p className="font-mono text-[10px]">43°32'N, 04°30'E · Primary Watch AOI</p>
+
+              {saved.status === 'loading' && <p className="settings-empty">Loading…</p>}
+              {saved.status === 'error' && (
+                <p className="settings-empty err">
+                  Could not load saved watersheds: {saved.error}{' '}
+                  <button className="settings-link" onClick={loadSaved}>Retry</button>
+                </p>
+              )}
+              {saved.status === 'done' && saved.items.length === 0 && (
+                <p className="settings-empty">Nothing saved yet. Open a watershed and use Save to keep it here.</p>
+              )}
+              {saved.items.map((item) => (
+                <div className="settings-row" key={item.id}>
+                  <div className="settings-row-content">
+                    <h4>{item.name}</h4>
+                    <p className="font-mono text-[10px]">
+                      {item.isCustom ? 'Custom area' : `Watershed · L${item.level ?? '?'}`}
+                      {Number.isFinite(item.areaKm2) ? ` · ${Math.round(item.areaKm2).toLocaleString()} km²` : ''}
+                      {item.updatedAt ? ` · saved ${new Date(item.updatedAt).toLocaleDateString()}` : ''}
+                    </p>
+                  </div>
+                  <div className="settings-control settings-control-pair">
+                    <button className="settings-button" onClick={() => navigate(`/watershed?id=${encodeURIComponent(item.id)}`)}>
+                      <ExternalLink size={13} /> Open
+                    </button>
+                    <button className="settings-button danger" onClick={() => removeSaved(item)} aria-label={`Delete ${item.name}`}>
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
                 </div>
-                <div className="settings-control flex items-center gap-4">
-                  <span className="text-[10px] font-mono text-accent-blue">Manage (3 watches)</span>
-                </div>
-              </div>
-              
-              <div className="settings-row">
-                <div className="settings-row-content">
-                  <h4 className="flex items-center gap-2">Madre de Dios Basin <div className="w-1.5 h-1.5 bg-warning-amber rounded-full"></div></h4>
-                  <p className="font-mono text-[10px]">12°35'S, 69°11'W · Forestry Surveillance</p>
-                </div>
-                <div className="settings-control flex items-center gap-4">
-                  <span className="text-[10px] font-mono text-accent-blue">Manage (1 watch)</span>
-                </div>
-              </div>
-              
-              <div className="settings-row">
-                <div className="settings-row-content">
-                  <h4 className="flex items-center gap-2">Rotterdam Maasvlakte <div className="w-1.5 h-1.5 bg-gray rounded-full"></div></h4>
-                  <p className="font-mono text-[10px]">51°57'N, 04°05'E · Vessel Dwell Survey</p>
-                </div>
-                <div className="settings-control flex items-center gap-4">
-                  <span className="text-[10px] font-mono text-accent-blue">Manage (2 watches)</span>
-                </div>
-              </div>
+              ))}
             </div>
           )}
 
-          {activeTab === 'Field Mode' && (
+          {activeTab === 'System' && (
             <div className="settings-section">
-              <h3 className="settings-section-title">Field Mode & Offline Cache</h3>
-              <p className="settings-section-desc">Tactical mobile deployment, degraded link handling, and outdoor display overrides.</p>
-              
-              <div className="settings-row">
-                <div className="settings-row-content">
-                  <h4>Low-Bandwidth Mode</h4>
-                  <p>Compress satellite raster tiles for degraded field connectivity.</p>
+              <div className="settings-section-head">
+                <div>
+                  <h3 className="settings-section-title">Service Status</h3>
+                  <p className="settings-section-desc">Live checks against the backend this workspace talks to.</p>
                 </div>
-                <div className="settings-control">
-                  <div className={`settings-toggle ${settings.lowBandwidth ? 'active' : ''}`} onClick={() => toggleSetting('lowBandwidth')}>
-                    <div className="settings-toggle-thumb"></div>
-                  </div>
-                </div>
-              </div>
-              
-              <div className="settings-row">
-                <div className="settings-row-content">
-                  <h4>Offline Tile Cache</h4>
-                  <p>Pre-download active AOI vectors and 10m rasters for zero-connectivity operations.</p>
-                </div>
-                <div className="settings-control">
-                  <button className="settings-button flex items-center gap-2 text-xs font-mono">
-                    <Download size={14} /> Cache 1.2 GB
-                  </button>
-                </div>
-              </div>
-              
-              <div className="settings-row">
-                <div className="settings-row-content">
-                  <h4>High-Contrast Sunlight Visibility</h4>
-                  <p>Invert vector strokes and enhance contrast for direct outdoor sun.</p>
-                </div>
-                <div className="settings-control">
-                  <div className={`settings-toggle ${settings.highContrast ? 'active' : ''}`} onClick={() => toggleSetting('highContrast')}>
-                    <div className="settings-toggle-thumb"></div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {activeTab === 'Appearance' && (
-            <div className="settings-section">
-              <h3 className="settings-section-title">Appearance</h3>
-              <p className="settings-section-desc">Ergonomic adjustments for dark control rooms and high-density typography.</p>
-              
-              <div className="settings-row">
-                <div className="settings-row-content">
-                  <h4>Theme Interface</h4>
-                  <p>Visual tone calibration across workspace canvases.</p>
-                </div>
-                <div className="settings-control">
-                  <div className="settings-theme-selector">
-                    <button className={settings.theme === 'Dark (Default)' ? 'active' : ''} onClick={() => updateSetting('theme', 'Dark (Default)')}>Dark (Default)</button>
-                    <button className={settings.theme === 'OLED Obsidian' ? 'active' : ''} onClick={() => updateSetting('theme', 'OLED Obsidian')}>OLED Obsidian</button>
-                    <button className={settings.theme === 'System' ? 'active' : ''} onClick={() => updateSetting('theme', 'System')}>System</button>
-                  </div>
-                </div>
-              </div>
-              
-              <div className="settings-row">
-                <div className="settings-row-content">
-                  <h4>Accent Color</h4>
-                  <p>Focus reticle, highlight vectors, and interactive element tint.</p>
-                </div>
-                <div className="settings-control">
-                  <div className="settings-color-selector">
-                    <div className={`color-option ${settings.accent === 'Electric Cyan' ? 'active' : ''}`} onClick={() => updateSetting('accent', 'Electric Cyan')}>
-                      <div className="color-circle" style={{ backgroundColor: '#2563eb' }}></div> Electric Cyan
-                    </div>
-                    <div className={`color-option ${settings.accent === 'Emerald' ? 'active' : ''}`} onClick={() => updateSetting('accent', 'Emerald')}>
-                      <div className="color-circle" style={{ backgroundColor: '#4ade80' }}></div> Emerald
-                    </div>
-                    <div className={`color-option ${settings.accent === 'Amber' ? 'active' : ''}`} onClick={() => updateSetting('accent', 'Amber')}>
-                      <div className="color-circle" style={{ backgroundColor: '#f59e0b' }}></div> Amber
-                    </div>
-                  </div>
-                </div>
+                <button className="settings-button" onClick={checkHealth} disabled={health.checking}>
+                  <RefreshCw size={13} className={health.checking ? 'spin' : ''} /> Re-check
+                </button>
               </div>
 
+              {statusRow('API Server', 'Stores evidence, field observations and saved watersheds.', health.checking ? null : health.api)}
+              {statusRow('Google Earth Engine', 'Satellite imagery, indices and watershed boundaries.', health.checking ? null : health.earthEngine)}
+
+              <h3 className="settings-section-title settings-subsection">Local Data</h3>
               <div className="settings-row">
                 <div className="settings-row-content">
-                  <h4>Monospace Font Rendering</h4>
-                  <p>Use Space Grotesk / JetBrains Mono for coordinates and timestamps.</p>
+                  <h4>Clear Browser Data</h4>
+                  <p>Removes settings and cached workspace state kept in this browser.</p>
                 </div>
                 <div className="settings-control">
-                  <div className={`settings-toggle ${settings.monoFont ? 'active' : ''}`} onClick={() => toggleSetting('monoFont')}>
-                    <div className="settings-toggle-thumb"></div>
-                  </div>
+                  <button className="settings-button danger" onClick={clearLocalData}>Clear local data</button>
                 </div>
               </div>
             </div>
           )}
 
           <div className="settings-footer">
-            <div className="flex items-center gap-2 text-[10px] font-mono text-success-mint">
-              <CheckCircle2 size={14} /> {saveStatus}
+            <div className={`settings-save-status ${saveStatus.tone}`}>
+              {saveStatus.tone === 'ok' ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />} {saveStatus.text}
             </div>
-            <div className="flex items-center gap-6">
-              <button className="text-[10px] font-mono text-gray hover:text-white transition-colors">
+            <div className="settings-footer-actions">
+              <button className="settings-link" onClick={resetDefaults}>
                 Reset to defaults
               </button>
-              <button className="px-4 py-2 bg-transparent hover:bg-white/5 border border-white/10 rounded-lg text-xs text-white flex items-center gap-2 transition-colors">
+              <button className="settings-button" onClick={exportConfig}>
                 <Download size={14} /> Export Configuration
               </button>
             </div>
           </div>
-          
+
         </div>
       </div>
     </div>

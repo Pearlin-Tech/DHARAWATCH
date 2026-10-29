@@ -1018,12 +1018,6 @@ export default function Detect() {
                 >
                   <Search size={13} /> Ask about this
                 </button>
-                <button
-                  className="btn-secondary text-xs py-2 flex items-center justify-center gap-2"
-                  onClick={() => navigate('/watch/new', { state: { geometry: selectedFeature.geometry, target: activeTarget } })}
-                >
-                  <Eye size={13} /> Create Watch
-                </button>
               </div>
             </motion.div>
           )}

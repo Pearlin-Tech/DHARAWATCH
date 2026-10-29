@@ -6,20 +6,12 @@ import Watershed from './pages/Watershed/Watershed';
 import Ask from './pages/Ask/Ask';
 import Detect from './pages/Detect/Detect';
 import Compare from './pages/Compare/Compare';
-import Measure from './pages/Measure/Measure';
-import Area from './pages/Area/Area';
 import Field from './pages/Field/Field';
 import EvidenceReview from './pages/EvidenceReview/EvidenceReview';
-import WatchList from './pages/Watch/WatchList';
-import WatchNew from './pages/Watch/WatchNew';
-import WatchDetail from './pages/Watch/WatchDetail';
-import Timeline from './pages/Timeline/Timeline';
 import Evidence from './pages/Evidence/Evidence';
-import Reports from './pages/Reports/Reports';
-import ReportDetail from './pages/Reports/ReportDetail';
 import Settings from './pages/Settings/Settings';
 import { GlobalProvider } from './context/GlobalContext';
-import { AppProvider } from './components/UniversalContextBar';
+import { AppProvider } from './components/AppContext';
 
 function App() {
   return (
@@ -37,17 +29,11 @@ function App() {
             <Route path="/ask" element={<Ask />} />
             <Route path="/detect" element={<Detect />} />
             <Route path="/compare" element={<Compare />} />
-            <Route path="/measure" element={<Measure />} />
-            <Route path="/area" element={<Area />} />
-            <Route path="/watch" element={<WatchList />} />
-            <Route path="/watch/new" element={<WatchNew />} />
-            <Route path="/watch/:id" element={<WatchDetail />} />
-            <Route path="/timeline" element={<Timeline />} />
             <Route path="/evidence" element={<Evidence />} />
             <Route path="/evidence/:id" element={<Evidence />} />
-            <Route path="/reports" element={<Reports />} />
-            <Route path="/reports/:id" element={<ReportDetail />} />
             <Route path="/settings" element={<Settings />} />
+            {/* Unknown paths (incl. retired mock pages: watch, reports, timeline, area, measure) */}
+            <Route path="*" element={<Navigate to="/explore" replace />} />
           </Routes>
         </Router>
       </GlobalProvider>

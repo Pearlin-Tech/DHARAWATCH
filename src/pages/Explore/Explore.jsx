@@ -1,33 +1,37 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
-  Search, Calendar, Layers, Map as MapIcon, ChevronRight, 
+  Search, Layers, Map as MapIcon, ChevronRight, 
   MessageSquare, Plus, Minus, Crosshair, Sparkles, Navigation,
-  Menu, Eye, Calendar as CalendarIcon, FileStack, Settings, Activity, Clock, MapPin, X, ShieldCheck,
+  Menu, Eye, FileStack, Settings, Activity, Clock, MapPin, X, ShieldCheck,
   GripHorizontal, Maximize2, Minimize2, Paperclip, ArrowUp, Compass, Cpu, CheckCircle2, AlertTriangle, Info, ClipboardCheck
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import maplibregl from '../../lib/maplibre';
 import { aiService } from '../../services/aiService';
+import { searchGeo } from '../../services/watershedClient';
+import { settingsService, BASEMAPS } from '../../services/settingsService';
 import { validateGeoTiffFile, processClientGeoTiff } from '../../utils/geotiffClient';
 import './Explore.css';
 
 export default function Explore() {
+  const prefs = useRef(settingsService.getLocal()).current;
   const mapContainer = useRef(null);
   const map = useRef(null);
   const markerRef = useRef(null);
   const userMarkerRef = useRef(null);
-  const [lng, setLng] = useState(72.5714);
-  const [lat, setLat] = useState(23.0225);
-  const [zoom, setZoom] = useState(12);
+  const [lng, setLng] = useState(prefs.startLon);
+  const [lat, setLat] = useState(prefs.startLat);
+  const [zoom, setZoom] = useState(prefs.startZoom);
   const [isNavExpanded, setIsNavExpanded] = useState(false);
-  const [activeLayer, setActiveLayer] = useState('satellite');
+  const [activeLayer, setActiveLayer] = useState(prefs.basemap);
   const [layersOpen, setLayersOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [markerCoords, setMarkerCoords] = useState(null);
   const [hoverCoords, setHoverCoords] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchState, setSearchState] = useState({ status: 'idle', results: [], message: null });
   const [layerOpacity, setLayerOpacity] = useState(100);
   
   // Geolocation state
@@ -49,9 +53,7 @@ export default function Explore() {
           sources: {
             satellite: {
               type: 'raster',
-              tiles: [
-                'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}'
-              ],
+              tiles: [BASEMAPS[prefs.basemap].tiles],
               tileSize: 256,
               attribution: 'Google'
             }
@@ -73,7 +75,6 @@ export default function Explore() {
 
       map.current.on('load', () => {
         setIsLoading(false);
-        // We would add satellite imagery layers here
       });
 
       map.current.on('move', () => {
@@ -201,24 +202,48 @@ export default function Explore() {
     );
   };
 
-  const handleSearch = (e) => {
-    if (e.key === 'Enter' && searchQuery.trim() !== '') {
-      // Simulate finding a location
-      const simulatedCoords = { lng: -122.4194, lat: 37.7749 };
-      setMarkerCoords(simulatedCoords);
-      setInspectorOpen(true);
-      map.current?.flyTo({
-        center: [simulatedCoords.lng, simulatedCoords.lat],
-        zoom: 13,
-        duration: 2000
-      });
+  const goToResult = (r) => {
+    const coords = { lng: Number(r.lon ?? r.center?.[0]), lat: Number(r.lat ?? r.center?.[1]) };
+    if (!Number.isFinite(coords.lng) || !Number.isFinite(coords.lat)) return;
+    setSearchState({ status: 'idle', results: [], message: null });
+    setSearchQuery(r.name || r.displayName || searchQuery);
+    setMarkerCoords(coords);
+    setInspectorOpen(true);
+    const [w, so, e, n] = Array.isArray(r.bbox) && r.bbox.length === 4 ? r.bbox : [];
+    if ([w, so, e, n].every(Number.isFinite) && (e - w > 0.01 || n - so > 0.01)) {
+      map.current?.fitBounds([[w, so], [e, n]], { padding: 60, maxZoom: 14, duration: 2000 });
+    } else {
+      map.current?.flyTo({ center: [coords.lng, coords.lat], zoom: 13, duration: 2000 });
     }
   };
 
+  const handleSearch = async (e) => {
+    if (e.key === 'Escape') { setSearchState({ status: 'idle', results: [], message: null }); return; }
+    if (e.key !== 'Enter' || searchQuery.trim() === '') return;
+    setSearchState({ status: 'loading', results: [], message: null });
+    try {
+      const { results, error } = await searchGeo(searchQuery.trim());
+      const usable = results.filter((r) => Number.isFinite(Number(r.lat ?? r.center?.[1])));
+      if (usable.length === 1) goToResult(usable[0]);
+      else if (usable.length > 1) setSearchState({ status: 'results', results: usable.slice(0, 6), message: null });
+      else setSearchState({ status: 'error', results: [], message: error?.message || `No place matched "${searchQuery.trim()}".` });
+    } catch (err) {
+      setSearchState({ status: 'error', results: [], message: `Search failed: ${err.message}` });
+    }
+  };
+
+  // Basemap switch + opacity act on the single raster layer
+  useEffect(() => {
+    const src = map.current?.getSource('satellite');
+    if (src?.setTiles && BASEMAPS[activeLayer]) src.setTiles([BASEMAPS[activeLayer].tiles]);
+  }, [activeLayer]);
+  useEffect(() => {
+    if (map.current?.getLayer('satellite-layer')) map.current.setPaintProperty('satellite-layer', 'raster-opacity', layerOpacity / 100);
+  }, [layerOpacity, isLoading]);
 
   const [copilotOpen, setCopilotOpen] = useState(false);
   const [copilotContext, setCopilotContext] = useState(null);
-  const [copilotMode, setCopilotMode] = useState('explorer');
+  const [copilotMode, setCopilotMode] = useState(prefs.aiMode);
   const [aiState, setAiState] = useState('idle');
   const [queryInput, setQueryInput] = useState('');
   const [chatMessages, setChatMessages] = useState([]);
@@ -413,7 +438,6 @@ export default function Explore() {
       selectedLocation: formattedLocation,
       coords: formattedLocation,
       dataset: contextOptions.dataset || 'Sentinel-2',
-      selectedDate: contextOptions.selectedDate || '24 Sep 2026',
       mapContext: {
         center: { lat: formattedLocation.lat, lon: formattedLocation.lon },
         zoom: currentZoom,
@@ -474,7 +498,6 @@ export default function Explore() {
         selectedLocation: activeLoc ? { lat: activeLoc.lat, lon: activeLoc.lng || activeLoc.lon } : null,
         entryPoint: copilotContext?.entryPoint || 'floating_map_button',
         dataset: copilotContext?.dataset || 'Sentinel-2',
-        selectedDate: copilotContext?.selectedDate || '24 Sep 2026',
         attachment: activeAttachment ? { attachmentId: activeAttachment.attachmentId, filename: activeAttachment.filename } : null
       });
 
@@ -598,7 +621,6 @@ export default function Explore() {
           <NavItem icon={<ClipboardCheck size={20} />} label="Evidence Review" path="/evidence-review" expanded={isNavExpanded} />
           <NavItem icon={<MessageSquare size={20} />} label="Ask" path="/ask" expanded={isNavExpanded} />
           <NavItem icon={<FileStack size={20} />} label="Compare" path="/compare" expanded={isNavExpanded} />
-          {/* Monitor hidden until the feature works (see AppNavigation HIDDEN_NAV_ITEMS) */}
           <NavItem icon={<ShieldCheck size={20} />} label="Evidence" path="/evidence" expanded={isNavExpanded} />
         </div>
 
@@ -617,22 +639,23 @@ export default function Explore() {
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={handleSearch}
+            aria-label="Search places"
           />
+          {searchState.status === 'loading' && <span className="text-[10px] font-mono text-gray">SEARCHING…</span>}
+          {(searchState.status === 'results' || searchState.status === 'error') && (
+            <div className="search-results glass-panel">
+              {searchState.status === 'error' && <div className="search-result-msg">{searchState.message}</div>}
+              {searchState.results.map((r, i) => (
+                <button key={r.id || i} className="search-result" onClick={() => goToResult(r)}>
+                  <span className="search-result-name">{r.name || r.displayName}</span>
+                  {r.displayName && r.displayName !== r.name && <span className="search-result-sub">{r.displayName}</span>}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         
         <div className="command-controls">
-          <button className="command-btn glass-panel text-xs font-mono">
-            <CalendarIcon size={14} className="mr-2 text-gray" />
-            DATE: <span className="text-white ml-1">24 Sep 2026</span>
-            <ChevronRight size={14} className="ml-1 text-gray" />
-          </button>
-          
-          <button className="command-btn glass-panel text-xs font-mono">
-            <FileStack size={14} className="mr-2 text-gray" />
-            DATASET: <span className="text-white ml-1">Sentinel-2</span>
-            <ChevronRight size={14} className="ml-1 text-gray" />
-          </button>
-          
           <button 
             className={`command-btn glass-panel text-xs font-mono ${layersOpen ? 'active' : ''}`}
             onClick={() => setLayersOpen(!layersOpen)}
@@ -654,36 +677,16 @@ export default function Explore() {
             transition={{ duration: 0.2 }}
           >
             <div className="panel-header flex items-center justify-between text-xs font-mono text-gray">
-              <span>SPECTRAL LAYERS</span>
+              <span>BASEMAP</span>
               <button onClick={() => setLayersOpen(false)}><ChevronRight size={14} className="rotate-[-90deg]"/></button>
             </div>
             <div className="layer-options mt-4">
-              <label className={`layer-option ${activeLayer === 'satellite' ? 'active' : ''}`}>
-                <input type="radio" name="layer" checked={activeLayer === 'satellite'} onChange={() => setActiveLayer('satellite')} />
-                <span className="text-sm flex-1">Satellite / True Color</span>
-                {activeLayer === 'satellite' && <span className="layer-badge">RGB</span>}
-              </label>
-              <label className={`layer-option ${activeLayer === 'optical' ? 'active' : ''}`}>
-                <input type="radio" name="layer" checked={activeLayer === 'optical'} onChange={() => setActiveLayer('optical')} />
-                <span className="text-sm flex-1">Optical / False Color</span>
-                {activeLayer === 'optical' && <span className="layer-badge">NIR</span>}
-              </label>
-              <label className={`layer-option ${activeLayer === 'sar' ? 'active' : ''}`}>
-                <input type="radio" name="layer" checked={activeLayer === 'sar'} onChange={() => setActiveLayer('sar')} />
-                <span className="text-sm flex-1">SAR (Radar)</span>
-              </label>
-              <label className={`layer-option ${activeLayer === 'ndvi' ? 'active' : ''}`}>
-                <input type="radio" name="layer" checked={activeLayer === 'ndvi'} onChange={() => setActiveLayer('ndvi')} />
-                <span className="text-sm flex-1">NDVI (Vegetation)</span>
-              </label>
-              <label className={`layer-option ${activeLayer === 'ndwi' ? 'active' : ''}`}>
-                <input type="radio" name="layer" checked={activeLayer === 'ndwi'} onChange={() => setActiveLayer('ndwi')} />
-                <span className="text-sm flex-1">NDWI (Water)</span>
-              </label>
-              <label className={`layer-option ${activeLayer === 'change' ? 'active' : ''}`}>
-                <input type="radio" name="layer" checked={activeLayer === 'change'} onChange={() => setActiveLayer('change')} />
-                <span className="text-sm flex-1">Change Detection</span>
-              </label>
+              {Object.entries(BASEMAPS).map(([id, b]) => (
+                <label key={id} className={`layer-option ${activeLayer === id ? 'active' : ''}`}>
+                  <input type="radio" name="layer" checked={activeLayer === id} onChange={() => setActiveLayer(id)} />
+                  <span className="text-sm flex-1">{b.label}</span>
+                </label>
+              ))}
             </div>
             
             <div className="opacity-control mt-6 pt-4 border-t border-white-10">
@@ -696,7 +699,7 @@ export default function Explore() {
                 min="0" 
                 max="100" 
                 value={layerOpacity} 
-                onChange={(e) => setLayerOpacity(e.target.value)} 
+                onChange={(e) => setLayerOpacity(Number(e.target.value))} 
                 className="opacity-slider"
               />
             </div>
@@ -829,8 +832,6 @@ export default function Explore() {
                 </div>
                 <div className="flex items-center gap-2 text-gray text-[11px]">
                   <span>{copilotContext.dataset || 'Sentinel-2'}</span>
-                  <span className="text-gray-dim">•</span>
-                  <span>{copilotContext.selectedDate || '24 Sep 2026'}</span>
                   <button 
                     className="text-gray hover:text-white ml-2 p-0.5" 
                     onClick={() => setCopilotContext(prev => ({ ...prev, selectedLocation: null }))}
@@ -843,7 +844,7 @@ export default function Explore() {
             ) : (
               <div className="copilot-context-strip flex items-center justify-between bg-black/40 px-4 py-1.5 border-b border-white/5 text-[11px] font-mono text-gray select-none">
                 <span>📍 Viewport Analysis Center</span>
-                <span>Sentinel-2 • 24 Sep 2026</span>
+                <span>{copilotContext?.dataset || 'Sentinel-2'}</span>
               </div>
             )}
 

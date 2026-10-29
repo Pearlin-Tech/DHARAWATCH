@@ -34,9 +34,9 @@ export default function Navbar() {
         
         <div className="navbar-right hide-mobile">
           <Link to="/explore" className="btn-secondary" style={{ textDecoration: 'none' }}>Workspace</Link>
-          <button className="profile-btn">
+          <Link to="/settings" className="profile-btn" aria-label="Settings">
             <User size={20} />
-          </button>
+          </Link>
         </div>
 
         <button 

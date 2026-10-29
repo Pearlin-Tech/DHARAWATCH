@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import maplibregl from '../../lib/maplibre';
 import FloatingPanel from '../../components/FloatingPanel';
 import AppNavigation from '../../components/AppNavigation';
-import { useAppContext } from '../../components/UniversalContextBar';
+import { useAppContext } from '../../components/AppContext';
 import {
   Search, Layers, Target, ArrowRight, Plus, Download, Trash2, MapPin, Pen, Crosshair, X, RefreshCw,
   Upload, ZoomIn, ZoomOut, Maximize, Save, Eye, MessageSquare, Star, ArrowLeft, ClipboardCheck
@@ -517,7 +517,7 @@ export default function Watershed() {
             )}
           </div>
           <div className="ws-menu-wrap">
-            <button className={`ws-act ${menu === 'demo' ? 'on' : ''}`} onClick={() => { if (menu !== 'demo' && demos.status === 'ERROR') reloadDemos(); setMenu(menu === 'demo' ? null : 'demo'); }}><Star size={12} /> DEMO ({demos.items.length})</button>
+            <button className={`ws-act ${menu === 'demo' ? 'on' : ''}`} onClick={() => { if (menu !== 'demo' && demos.status === 'ERROR') reloadDemos(); setMenu(menu === 'demo' ? null : 'demo'); }}><Star size={12} /> EXAMPLES ({demos.items.length})</button>
             {menu === 'demo' && (
               <div className="ws-menu wide">
                 <div className="ws-menu-head">CURATED EXAMPLES</div>

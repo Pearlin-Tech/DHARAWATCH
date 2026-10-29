@@ -110,29 +110,13 @@
   .detect-debug-bar { left: 8px !important; right: 8px !important; bottom: calc(var(--mnav-h) + 8px) !important; overflow-x: auto; }
   .detect-container [class*="top-bar"], .detect-container [class*="status"] { min-width: 0 !important; }
 
-  /* ── Timeline / Measure / Area ── */
-  .timeline-top-controls, .timeline-bottom-controls { left: 8px !important; right: 8px !important; flex-wrap: wrap; }
-  .timeline-bottom-controls { bottom: calc(var(--mnav-h) + 8px) !important; overflow: hidden; }
-  .timeline-bottom-controls > * { min-width: 0; max-width: 100%; }
-  .event-inspector-panel { left: 8px !important; right: 8px !important; width: auto !important; }
-  .measure-result-panel, .area-result-panel {
-    left: 8px !important; right: 8px !important; width: auto !important; bottom: calc(var(--mnav-h) + 8px) !important;
-  }
-
   /* ── pages that pushed content right of the rail ── */
-  .watch-main-content, .reports-container, .report-detail-container, .settings-container,
+  .settings-container,
   [class*="-main-content"] { margin-left: 0 !important; padding-bottom: calc(var(--mnav-h) + 16px) !important; }
-  .watch-side-panel, .watch-form-panel { width: 100% !important; }
-  /* wide data tables scroll sideways instead of squeezing */
-  .reports-list { overflow-x: auto; }
-  .reports-list-header, .report-row { min-width: 760px; }
-  .watch-table { display: block; overflow-x: auto; }
-  .watch-table > * { min-width: 720px; }
   .settings-row { flex-direction: column !important; align-items: stretch !important; gap: 10px !important; }
   .settings-control, .settings-control > * { width: 100% !important; max-width: 100% !important; }
   .settings-tabs { overflow-x: auto; flex-wrap: nowrap !important; }
-  .settings-container, .reports-container, .report-detail-container { padding-left: 16px !important; padding-right: 16px !important; }
-  .watch-detail-layout, .watch-new-layout { flex-direction: column !important; }
+  .settings-container { padding-left: 16px !important; padding-right: 16px !important; }
 
   /* ── Evidence / Evidence Review: leave room for the tab bar ── */
   .evd-page { padding-bottom: calc(var(--mnav-h) + 8px) !important; }

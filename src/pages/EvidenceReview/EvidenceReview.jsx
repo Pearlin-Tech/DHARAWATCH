@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import maplibregl from '../../lib/maplibre';
 import AppNavigation from '../../components/AppNavigation';
-import { useAppContext } from '../../components/UniversalContextBar';
+import { useAppContext } from '../../components/AppContext';
 import { getContextById, listDemos, listSaved } from '../../services/watershedClient';
 import { listInterventions, getInterventionStatusInfo } from '../../services/interventionClient';
 import {
@@ -26,6 +26,7 @@ import { WATERSHED_LAYERS, LAYER_IDS } from '../../shared/layerRegistry';
 import { evaluateEvidence } from '../../shared/evidenceStatus';
 import { evidenceService } from '../../services/evidenceService';
 import { saveLocalEvidence } from '../../services/localEvidence';
+import { reviewerName } from '../../services/settingsService';
 import {
   Section, StatePill, EvidenceCards, EvidenceStatusBlock, FieldSection, SatelliteSection, TerrainSection,
   TimelineSection, AssessmentSection, BriefSection, PhotoViewer, fmtDate
@@ -230,6 +231,7 @@ export default function EvidenceReview() {
         status: ev.key, label: ev.label, reasons: ev.reasons, limitations: ev.limitations,
         satellite: s ? { baseline: s.baseline.acquisitionDate, current: s.current.acquisitionDate, change: s.change } : null,
         fieldPhotos: ev.field.photoCount,
+        reviewedBy: reviewerName() || null,
         createdAt: new Date().toISOString()
       };
       saveLocalEvidence(reviewRecord);                       // kept in this browser

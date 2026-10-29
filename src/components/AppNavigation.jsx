@@ -1,11 +1,8 @@
 import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Map as MapIcon, MessageSquare, Crosshair, FileStack, Settings, Activity, Clock, Eye, ShieldCheck, Layers, MapPin, Navigation, ClipboardCheck } from 'lucide-react';
+import { Map as MapIcon, MessageSquare, FileStack, Settings, Eye, ShieldCheck, Layers, MapPin, ClipboardCheck } from 'lucide-react';
 import './AppNavigation.css';
-
-// Not working yet — hidden from the rail until they're built out. Remove an id to show it again.
-const HIDDEN_NAV_ITEMS = new Set(['monitor', 'reports']);
 
 export default function AppNavigation() {
   const [isNavExpanded, setIsNavExpanded] = useState(false);
@@ -25,7 +22,6 @@ export default function AppNavigation() {
     { id: 'evidence-review', icon: ClipboardCheck, label: 'Evidence Review', path: '/evidence-review' },
     { id: 'ask', icon: MessageSquare, label: 'Ask', path: '/ask' },
     { id: 'compare', icon: FileStack, label: 'Compare', path: '/compare' },
-    { id: 'monitor', icon: Activity, label: 'Monitor', path: '/watch' },
     { id: 'evidence', icon: ShieldCheck, label: 'Evidence', path: '/evidence' },
   ];
 
@@ -63,8 +59,6 @@ export default function AppNavigation() {
       
       <div className="nav-rail-links">
         {navItems.map((item) => {
-          if (HIDDEN_NAV_ITEMS.has(item.id)) return null;
-          
           return (
             <button 
               key={item.id}
@@ -92,23 +86,6 @@ export default function AppNavigation() {
       </div>
 
       <div className="nav-rail-bottom" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-        {!HIDDEN_NAV_ITEMS.has('reports') && (
-        <button className={`nav-item ${location.pathname.includes('/reports') ? 'active' : ''}`} onClick={() => navigate('/reports')}>
-          <div className="nav-icon"><FileStack size={18} /></div>
-          <AnimatePresence>
-            {isNavExpanded && (
-              <motion.span 
-                className="nav-label"
-                initial={{ opacity: 0, x: -10, width: 0 }}
-                animate={{ opacity: 1, x: 0, width: 'auto' }}
-                exit={{ opacity: 0, x: -10, width: 0 }}
-              >
-                Reports
-              </motion.span>
-            )}
-          </AnimatePresence>
-        </button>
-        )}
         <button className={`nav-item ${location.pathname.includes('/settings') ? 'active' : ''}`} onClick={() => navigate('/settings')}>
           <div className="nav-icon"><Settings size={18} /></div>
           <AnimatePresence>

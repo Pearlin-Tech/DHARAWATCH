@@ -97,6 +97,7 @@ export default function Evidence() {
                 <dt>Result</dt><dd>{selected.summary?.detectionCount ?? 0} features · {selected.summary?.totalAreaKm2 != null ? `${selected.summary.totalAreaKm2.toFixed(3)} km²` : '—'}</dd>
               </>}
               {loc?.latitude != null && <><dt>Location</dt><dd>{Number(loc.latitude).toFixed(5)}, {Number(loc.longitude).toFixed(5)}{loc.source ? ` (${loc.source})` : ''}</dd></>}
+              {selected.reviewedBy && <><dt>Reviewed by</dt><dd>{selected.reviewedBy}</dd></>}
               {selected.captureTime && <><dt>Captured</dt><dd>{fmt(selected.captureTime)}</dd></>}
               {selected.condition && <><dt>Condition</dt><dd>{selected.condition}</dd></>}
               {selected.themes?.length > 0 && <><dt>Themes</dt><dd>{selected.themes.join(', ')}</dd></>}

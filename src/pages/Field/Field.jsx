@@ -72,7 +72,7 @@ function getStepperState(obs, uploadState, fieldContext) {
 }
 
 import { useGlobalContext } from '../../context/GlobalContext';
-import { useAppContext } from '../../components/UniversalContextBar';
+import { useAppContext } from '../../components/AppContext';
 import { saveLocalEvidence, imageThumbnail } from '../../services/localEvidence';
 
 // ─── Component ───────────────────────────────────────────────────
