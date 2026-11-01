@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Crosshair, AlertTriangle, Play, Pause, ChevronLeft, ChevronRight as IconChevronRight, CheckCircle, XCircle, ArrowRight, TrendingUp, TrendingDown, LocateFixed, Loader2 } from 'lucide-react';
+import { Crosshair, AlertTriangle, Play, Pause, ChevronLeft, ChevronRight as IconChevronRight, CheckCircle, XCircle, ArrowRight, TrendingUp, TrendingDown, LocateFixed, Loader2, Navigation } from 'lucide-react';
 import AppNavigation from '../../components/AppNavigation';
 import MapViewport from '../../components/MapViewport';
 import './Compare.css';
@@ -166,6 +166,90 @@ export default function Compare() {
 
   useEffect(() => () => { if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current); }, []);
 
+  // Coordinate jump input
+  const [coordInput, setCoordInput] = useState('');
+  const [coordError, setCoordError] = useState('');
+  const [coordOpen, setCoordOpen] = useState(false);
+  const coordInputRef = useRef(null);
+  // Prevent onBlur from closing the panel when the Go button is clicked
+  const coordMouseDownRef = useRef(false);
+
+  // ── Date editing (Before / After) ──────────────────────────────────────────
+  const [dateEditField, setDateEditField] = useState(null); // 'baseline' | 'current' | null
+  const [dateInputVal, setDateInputVal] = useState('');
+  const [dateError, setDateError] = useState('');
+  const dateMouseDownRef = useRef(false);
+
+  // Accept "YYYY-MM-DD", "DD Mon YYYY", "DD/MM/YYYY" etc.
+  const parseDateInput = (raw) => {
+    const str = raw.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+      const d = new Date(str + 'T00:00:00'); return isNaN(d) ? null : d;
+    }
+    const parsed = new Date(str);
+    if (!isNaN(parsed.getTime())) return parsed;
+    const dmy = str.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})$/);
+    if (dmy) {
+      const d = new Date(`${dmy[3]}-${dmy[2].padStart(2,'0')}-${dmy[1].padStart(2,'0')}T00:00:00`);
+      if (!isNaN(d)) return d;
+    }
+    return null;
+  };
+
+  const commitDateEdit = useCallback(() => {
+    if (!dateEditField) return;
+    const parsed = parseDateInput(dateInputVal);
+    if (!parsed) { setDateError('Unrecognised date'); return; }
+    // Clamp to timeline bounds
+    const clamped = new Date(Math.min(Math.max(parsed.getTime(), MIN_DATE), MAX_DATE));
+    const iso = clamped.toISOString().split('T')[0];
+
+    if (dateEditField === 'baseline') {
+      if (iso >= timelineDate) { setDateError('Before must be earlier than After'); return; }
+      setBaselineDate(iso);
+      setCommittedBaseline(iso);
+    } else {
+      if (iso <= baselineDate) { setDateError('After must be later than Before'); return; }
+      setTimelineDate(iso);
+      setCommittedCurrent(iso);
+    }
+    setDateError('');
+    setDateEditField(null);
+  }, [dateEditField, dateInputVal, baselineDate, timelineDate]);
+
+  const openDateEdit = (field) => {
+    setDateInputVal(field === 'baseline' ? baselineDate : timelineDate);
+    setDateError('');
+    setDateEditField(field);
+  };
+
+  const parseAndJump = useCallback((str) => {
+    const plain = str.replace(/[°'"NSEW]/gi, ' ').replace(/,/g, ' ').trim();
+    const parts = plain.split(/\s+/).filter(Boolean);
+    if (parts.length < 2) { setCoordError('Enter: lat, lng'); return false; }
+    const lat = parseFloat(parts[0]);
+    const lng = parseFloat(parts[1]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) { setCoordError('Invalid numbers'); return false; }
+    if (lat < -90 || lat > 90)   { setCoordError('Lat must be −90 to 90'); return false; }
+    if (lng < -180 || lng > 180) { setCoordError('Lng must be −180 to 180'); return false; }
+
+    setCoordError('');
+    const coords = { lat, lng };
+    setMarkerCoords(coords);
+    // Use a small timeout so map state is ready
+    setTimeout(() => {
+      if (map1) map1.flyTo({ center: [lng, lat], zoom: Math.max(map1.getZoom(), 15), speed: 1.8 });
+      if (map2) map2.jumpTo({ center: [lng, lat], zoom: Math.max(map2.getZoom(), 15) });
+    }, 0);
+    setCoordInput(`${lat.toFixed(6)}, ${lng.toFixed(6)}`);
+    setCoordOpen(false);
+    return true;
+  }, [map1, map2]);
+
+  const handleCoordJump = useCallback(() => {
+    parseAndJump(coordInput);
+  }, [coordInput, parseAndJump]);
+
   const sliderRef = useRef(null);
   const isSyncingLeft = useRef(false);
   const isSyncingRight = useRef(false);
@@ -306,69 +390,205 @@ export default function Compare() {
       <AppNavigation />
 
       {/* TOP BAR */}
-      <div className="compare-top-bar glass-panel text-xs font-mono text-gray">
-        <div className="flex items-center gap-5">
+      <div className="compare-top-bar glass-panel">
+        {/* LEFT GROUP */}
+        <div className="ctb-left">
           {navIn.returnTo && (
             <button className="compare-live-btn" onClick={() => navigate(navIn.returnTo)} title={`Back to ${navIn.returnLabel || 'previous page'}`}>
               <ChevronLeft size={13} /> {navIn.returnLabel || 'Back'}
             </button>
           )}
           {navIn.siteName && (
-            <div className="flex flex-col">
-              <span className="text-[10px] text-gray-dim uppercase mb-0.5">Site</span>
-              <span className="text-white font-bold" title={navIn.siteName}>{navIn.siteName}{navIn.bufferM ? <span className="text-gray-dim font-normal"> · {navIn.bufferM} m area</span> : null}</span>
+            <div className="ctb-field">
+              <span className="ctb-label">Site</span>
+              <span className="ctb-value ctb-value--bold" title={navIn.siteName}>
+                {navIn.siteName}{navIn.bufferM ? <span className="ctb-dim"> · {navIn.bufferM} m</span> : null}
+              </span>
             </div>
           )}
-          <div className="flex flex-col">
-            <span className="text-[10px] text-gray-dim uppercase mb-0.5">Location</span>
-            <span className="text-white flex items-center gap-2">
-              <Crosshair size={12} className="text-accent-blue" />
-              {markerCoords.lat.toFixed(4)}°N, {markerCoords.lng.toFixed(4)}°E
+
+          {/* COORDINATE JUMP */}
+          <div className="ctb-field ctb-coord-wrapper">
+            <span className="ctb-label">
+              <Crosshair size={10} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} />
+              Location
+            </span>
+            {coordOpen ? (
+              <div className="ctb-coord-edit">
+                <input
+                  ref={coordInputRef}
+                  className="ctb-coord-input"
+                  type="text"
+                  value={coordInput}
+                  autoFocus
+                  placeholder="23.1646, 72.6479"
+                  onChange={(e) => { setCoordInput(e.target.value); setCoordError(''); }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') { e.preventDefault(); handleCoordJump(); }
+                    if (e.key === 'Escape') { setCoordOpen(false); setCoordError(''); }
+                  }}
+                  onBlur={() => {
+                    // Only close if Go button was NOT the trigger
+                    if (!coordMouseDownRef.current) {
+                      setCoordOpen(false);
+                      setCoordError('');
+                    }
+                    coordMouseDownRef.current = false;
+                  }}
+                />
+                <button
+                  className="ctb-go-btn"
+                  onMouseDown={() => { coordMouseDownRef.current = true; }}
+                  onClick={() => { coordMouseDownRef.current = false; handleCoordJump(); }}
+                >
+                  <Navigation size={11} /> Go
+                </button>
+                {coordError && <span className="ctb-coord-error">⚠ {coordError}</span>}
+              </div>
+            ) : (
+              <button
+                className="ctb-coord-display"
+                onClick={() => {
+                  setCoordInput(`${markerCoords.lat.toFixed(6)}, ${markerCoords.lng.toFixed(6)}`);
+                  setCoordError('');
+                  setCoordOpen(true);
+                }}
+                title="Click to jump to coordinates"
+              >
+                {markerCoords.lat.toFixed(4)}°N, {markerCoords.lng.toFixed(4)}°E
+              </button>
+            )}
+          </div>
+
+          <div className="ctb-divider" />
+
+          {/* BEFORE DATE — editable */}
+          <div className="ctb-field ctb-date-wrapper">
+            <span className="ctb-label">Before</span>
+            {dateEditField === 'baseline' ? (
+              <div className="ctb-date-edit">
+                <input
+                  className="ctb-date-input"
+                  type="date"
+                  value={dateInputVal}
+                  min="2011-01-01"
+                  max={timelineDate}
+                  autoFocus
+                  onChange={(e) => { setDateInputVal(e.target.value); setDateError(''); }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') { e.preventDefault(); commitDateEdit(); }
+                    if (e.key === 'Escape') { setDateEditField(null); setDateError(''); }
+                  }}
+                  onBlur={() => {
+                    if (!dateMouseDownRef.current) { setDateEditField(null); setDateError(''); }
+                    dateMouseDownRef.current = false;
+                  }}
+                />
+                <button
+                  className="ctb-go-btn"
+                  onMouseDown={() => { dateMouseDownRef.current = true; }}
+                  onClick={() => { dateMouseDownRef.current = false; commitDateEdit(); }}
+                >
+                  Set
+                </button>
+                {dateError && dateEditField === 'baseline' && (
+                  <span className="ctb-coord-error">⚠ {dateError}</span>
+                )}
+              </div>
+            ) : (
+              <button
+                className="ctb-coord-display"
+                onClick={() => openDateEdit('baseline')}
+                title="Click to set Before date"
+              >
+                {formatDisplayDate(baselineDate)}
+              </button>
+            )}
+            {apiResult?.baseline?.actualDate && <span className="ctb-sub ctb-sub--blue">Sat: {apiResult.baseline.actualDate}</span>}
+          </div>
+
+          <ArrowRight size={14} className="text-accent-blue flex-shrink-0" />
+
+          {/* AFTER DATE — editable */}
+          <div className="ctb-field ctb-date-wrapper">
+            <span className="ctb-label ctb-label--blue">After ({yearsDiff()} yrs)</span>
+            {dateEditField === 'current' ? (
+              <div className="ctb-date-edit">
+                <input
+                  className="ctb-date-input"
+                  type="date"
+                  value={dateInputVal}
+                  min={baselineDate}
+                  max="2026-12-31"
+                  autoFocus
+                  onChange={(e) => { setDateInputVal(e.target.value); setDateError(''); }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') { e.preventDefault(); commitDateEdit(); }
+                    if (e.key === 'Escape') { setDateEditField(null); setDateError(''); }
+                  }}
+                  onBlur={() => {
+                    if (!dateMouseDownRef.current) { setDateEditField(null); setDateError(''); }
+                    dateMouseDownRef.current = false;
+                  }}
+                />
+                <button
+                  className="ctb-go-btn"
+                  onMouseDown={() => { dateMouseDownRef.current = true; }}
+                  onClick={() => { dateMouseDownRef.current = false; commitDateEdit(); }}
+                >
+                  Set
+                </button>
+                {dateError && dateEditField === 'current' && (
+                  <span className="ctb-coord-error">⚠ {dateError}</span>
+                )}
+              </div>
+            ) : (
+              <button
+                className="ctb-coord-display ctb-coord-display--blue"
+                onClick={() => openDateEdit('current')}
+                title="Click to set After date"
+              >
+                {formatDisplayDate(timelineDate)}
+              </button>
+            )}
+            {apiResult?.current?.actualDate && <span className="ctb-sub ctb-sub--blue">Sat: {apiResult.current.actualDate}</span>}
+          </div>
+
+          <div className="ctb-divider" />
+
+          <div className="ctb-field">
+            <span className="ctb-label">Imagery</span>
+            <span className="ctb-value">
+              {hdActive ? 'HD aerial (~0.5 m)'
+                : [...new Set([apiResult?.baseline?.sensor, apiResult?.current?.sensor].filter(Boolean))].join(' → ') || 'Sentinel-2 MSI (10 m)'}
             </span>
           </div>
-          <div className="h-6 w-px bg-white/10"></div>
-          <div className="flex flex-col">
-            <span className="text-[10px] text-gray-dim uppercase mb-0.5">Before</span>
-            <span className="text-white font-bold">{formatDisplayDate(baselineDate)}</span>
-            {apiResult?.baseline?.actualDate && <span className="text-[9px] text-accent-blue">Sat: {apiResult.baseline.actualDate}</span>}
-          </div>
-          <ArrowRight size={14} className="text-accent-blue" />
-          <div className="flex flex-col">
-            <span className="text-[10px] text-accent-blue uppercase mb-0.5">After ({yearsDiff()} yrs)</span>
-            <span className="text-white font-bold">{formatDisplayDate(timelineDate)}</span>
-            {apiResult?.current?.actualDate && <span className="text-[9px] text-accent-blue">Sat: {apiResult.current.actualDate}</span>}
-          </div>
-          <div className="h-6 w-px bg-white/10"></div>
-          <div className="flex flex-col">
-            <span className="text-[10px] text-gray-dim uppercase mb-0.5">Imagery</span>
-            <span className="text-white">{hdActive ? 'HD aerial (~0.5 m)'
-              : [...new Set([apiResult?.baseline?.sensor, apiResult?.current?.sensor].filter(Boolean))].join(' → ') || 'Sentinel-2 MSI (10 m)'}</span>
-          </div>
         </div>
 
-        <div className="flex items-center gap-3">
-        <button
-          className={`compare-live-btn ${liveTracking ? 'active' : ''} ${liveStatus?.state === 'error' ? 'error' : ''}`}
-          onClick={liveTracking ? stopLiveLocation : startLiveLocation}
-          title={liveStatus?.message || (liveTracking ? 'Stop live location' : 'Go to my live location')}
-        >
-          {liveStatus?.state === 'locating' ? <Loader2 size={13} className="animate-spin" /> : <LocateFixed size={13} />}
-          {liveStatus?.state === 'error' ? liveStatus.message
-            : liveStatus?.state === 'ok' ? `Live · ±${liveStatus.accuracy} m`
-            : liveStatus?.state === 'locating' ? 'Locating…'
-            : 'My location'}
-        </button>
+        {/* RIGHT GROUP */}
+        <div className="ctb-right">
+          <button
+            className={`compare-live-btn ${liveTracking ? 'active' : ''} ${liveStatus?.state === 'error' ? 'error' : ''}`}
+            onClick={liveTracking ? stopLiveLocation : startLiveLocation}
+            title={liveStatus?.message || (liveTracking ? 'Stop live location' : 'Go to my live location')}
+          >
+            {liveStatus?.state === 'locating' ? <Loader2 size={13} className="animate-spin" /> : <LocateFixed size={13} />}
+            {liveStatus?.state === 'error' ? liveStatus.message
+              : liveStatus?.state === 'ok' ? `Live · ±${liveStatus.accuracy} m`
+              : liveStatus?.state === 'locating' ? 'Locating…'
+              : 'My location'}
+          </button>
 
-        <div className="flex items-center gap-1 bg-black/40 p-1 rounded-md border border-white/5">
-          <button className={`px-3 py-1.5 rounded-sm transition-colors ${hdActive ? 'bg-accent-blue text-white' : 'text-gray hover:text-white'}`} disabled={!waybackReleases} onClick={() => setImagery('hd')}>HD</button>
-          <button className={`px-3 py-1.5 rounded-sm transition-colors ${!hdActive ? 'bg-accent-blue text-white' : 'text-gray hover:text-white'}`} onClick={() => setImagery('sentinel')}>10&nbsp;m</button>
-        </div>
+          <div className="ctb-toggle-group">
+            <button className={`ctb-toggle-btn ${hdActive ? 'active' : ''}`} disabled={!waybackReleases} onClick={() => setImagery('hd')}>HD</button>
+            <button className={`ctb-toggle-btn ${!hdActive ? 'active' : ''}`} onClick={() => setImagery('sentinel')}>10&nbsp;m</button>
+          </div>
 
-        <div className="flex items-center gap-2 bg-black/40 p-1 rounded-md border border-white/5">
-          <button className={`px-3 py-1.5 rounded-sm transition-colors ${mode === 'split' ? 'bg-accent-blue text-white' : 'text-gray hover:text-white'}`} onClick={() => setMode('split')}>Split</button>
-          <button className={`px-3 py-1.5 rounded-sm transition-colors ${mode === 'difference' ? 'bg-accent-blue text-white' : 'text-gray hover:text-white'}`} onClick={() => setMode('difference')}>Difference</button>
-          <button className={`px-3 py-1.5 rounded-sm transition-colors ${mode === 'flicker' ? 'bg-accent-blue text-white' : 'text-gray hover:text-white'}`} onClick={() => { setMode('flicker'); setFlickerActive(true); }}>Flicker</button>
-        </div>
+          <div className="ctb-toggle-group">
+            <button className={`ctb-toggle-btn ${mode === 'split' ? 'active' : ''}`} onClick={() => setMode('split')}>Split</button>
+            <button className={`ctb-toggle-btn ${mode === 'difference' ? 'active' : ''}`} onClick={() => setMode('difference')}>Difference</button>
+            <button className={`ctb-toggle-btn ${mode === 'flicker' ? 'active' : ''}`} onClick={() => { setMode('flicker'); setFlickerActive(true); }}>Flicker</button>
+          </div>
         </div>
       </div>
 

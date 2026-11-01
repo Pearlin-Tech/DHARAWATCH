@@ -7,6 +7,7 @@
   color: var(--text-primary);
 }
 
+/* ─── TOP BAR ─────────────────────────────────────────────────────────────── */
 .compare-top-bar {
   position: absolute;
   top: var(--spacing-6);
@@ -16,9 +17,229 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 12px 24px;
+  padding: 10px 20px;
   border-radius: 12px;
+  gap: 12px;
 }
+
+/* Left / right flex groups */
+.ctb-left {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.ctb-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+/* Thin vertical separator */
+.ctb-divider {
+  width: 1px;
+  height: 28px;
+  background: rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+
+/* Each label+value pair */
+.ctb-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.ctb-label {
+  font-size: 9px;
+  font-family: monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #6b7280;
+  white-space: nowrap;
+}
+
+.ctb-label--blue { color: var(--accent-blue, #2563eb); }
+
+.ctb-value {
+  font-size: 12px;
+  font-family: monospace;
+  color: white;
+  white-space: nowrap;
+}
+
+.ctb-value--bold { font-weight: 700; }
+
+.ctb-sub {
+  font-size: 9px;
+  font-family: monospace;
+  color: #6b7280;
+  white-space: nowrap;
+}
+
+.ctb-sub--blue { color: var(--accent-blue, #2563eb); }
+
+.ctb-dim { color: #6b7280; font-weight: 400; }
+
+/* ─── COORDINATE JUMP ─────────────────────────────────────────────────────── */
+.ctb-coord-wrapper {
+  min-width: 160px;
+}
+
+/* Collapsed state: looks like a clickable value */
+.ctb-coord-display {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: white;
+  font-family: monospace;
+  font-size: 12px;
+  padding: 3px 6px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.ctb-coord-display:hover {
+  border-color: rgba(37, 99, 235, 0.4);
+  background: rgba(37, 99, 235, 0.07);
+}
+
+/* Expanded edit row */
+.ctb-coord-edit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+}
+
+.ctb-coord-input {
+  background: rgba(37, 99, 235, 0.1);
+  border: 1px solid rgba(37, 99, 235, 0.5);
+  border-radius: 6px;
+  color: white;
+  font-family: monospace;
+  font-size: 12px;
+  padding: 4px 8px;
+  outline: none;
+  width: 190px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.ctb-coord-input:focus {
+  border-color: rgba(37, 99, 235, 0.9);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2);
+}
+
+.ctb-go-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: rgba(37, 99, 235, 0.85);
+  border: none;
+  border-radius: 5px;
+  color: white;
+  font-family: monospace;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.ctb-go-btn:hover { background: rgba(37, 99, 235, 1); }
+
+.ctb-coord-error {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  font-size: 9px;
+  font-family: monospace;
+  color: #f87171;
+  background: rgba(0, 0, 0, 0.85);
+  padding: 2px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  z-index: 100;
+  pointer-events: none;
+}
+
+/* ─── DATE EDITING ────────────────────────────────────────────────────────── */
+.ctb-date-wrapper {
+  min-width: 110px;
+}
+
+.ctb-date-edit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+}
+
+.ctb-date-input {
+  background: rgba(37, 99, 235, 0.1);
+  border: 1px solid rgba(37, 99, 235, 0.5);
+  border-radius: 6px;
+  color: white;
+  font-family: monospace;
+  font-size: 11px;
+  padding: 4px 6px;
+  outline: none;
+  width: 136px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  color-scheme: dark;
+}
+
+.ctb-date-input:focus {
+  border-color: rgba(37, 99, 235, 0.9);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2);
+}
+
+/* Blue-tinted display button for After date */
+.ctb-coord-display--blue {
+  color: #93c5fd;
+}
+.ctb-coord-display--blue:hover {
+  border-color: rgba(37, 99, 235, 0.5);
+  background: rgba(37, 99, 235, 0.1);
+}
+
+/* ─── TOGGLE BUTTON GROUPS ────────────────────────────────────────────────── */
+.ctb-toggle-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: rgba(0, 0, 0, 0.4);
+  padding: 3px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.ctb-toggle-btn {
+  padding: 5px 12px;
+  border-radius: 5px;
+  border: none;
+  background: transparent;
+  color: #9ca3af;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+
+.ctb-toggle-btn:hover:not(:disabled) { color: white; }
+.ctb-toggle-btn.active { background: var(--accent-blue, #2563eb); color: white; }
+.ctb-toggle-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+
 
 .compare-maps-wrapper {
   position: absolute;
