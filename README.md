@@ -265,4 +265,4 @@ Serverless limits to know:
 
 ## 📄 License
 
-Proprietary — DRISHTIWATCH Team
+Proprietary — DHARAWATCH Team
